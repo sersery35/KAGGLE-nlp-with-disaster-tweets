@@ -2,11 +2,9 @@ import pandas as pd
 import numpy as np
 import os
 from tensorflow.keras.utils import to_categorical
-import tensorflow as tf
-import tensorflow_hub as tf_hub
 from sklearn import preprocessing
 from transformers import BertTokenizer
-
+import tokenization
 
 class DataHandler:
     sample_submission_data = None
@@ -16,14 +14,15 @@ class DataHandler:
     text_tokenizer = None
 
     def __init__(self,
-                 # vocabulary_file: np.array,
+                 vocabulary_file: np.array,
+                 lowercase_file: np.array,
                  train_file_name: str,
                  test_file_name: str,
                  sample_submission_file_name: str,
                  train_split=0.8):
         if train_split <= 0 or train_split > 1:
             raise ValueError('Value of train_split should be in (0,1] inclusive range')
-        self.text_tokenizer = TextTokenizer()
+        self.text_tokenizer = TextTokenizer(vocabulary_file, lowercase_file)
         self.prepare_data(train_file_name=train_file_name,
                           test_file_name=test_file_name,
                           sample_submission_file_name=sample_submission_file_name,
@@ -90,13 +89,17 @@ class TextTokenizer:
     bert_tokenizer_name = None
     vocabulary_file = None
 
-    def __init__(self, bert_tokenizer_name="bert-base-uncased"):
+    def __init__(self, vocabulary_file: np.array, lowercase_file: np.array,
+                 use_model_tokenizer=True, bert_tokenizer_name="bert-base-uncased"):
         # self.vocabulary_file = vocabulary_file
         self.bert_tokenizer_name = bert_tokenizer_name
         print(f"Bert tokenizer: {bert_tokenizer_name}")
-        self.tokenizer = BertTokenizer.from_pretrained(self.bert_tokenizer_name)
+        if use_model_tokenizer:
+            self.tokenizer = tokenization.FullTokenizer(vocabulary_file, lowercase_file)
+        else:
+            self.tokenizer = BertTokenizer.from_pretrained(self.bert_tokenizer_name)
 
-    def tokenize(self, texts, max_length=60):
+    def tokenize(self, texts: pd.DataFrame, max_length=60):
         all_tokens = []
         all_masks = []
         all_segments = []
@@ -114,7 +117,7 @@ class TextTokenizer:
 
         return np.array(all_tokens), np.array(all_masks), np.array(all_segments)
 
-    def encode(self, input_sequence, max_length):
+    def encode(self, input_sequence: np.array, max_length: int):
         padding_length = max_length - len(input_sequence)
         # convert tokens to ids
         tokens = self.tokenizer.convert_tokens_to_ids(input_sequence) + [0] * padding_length

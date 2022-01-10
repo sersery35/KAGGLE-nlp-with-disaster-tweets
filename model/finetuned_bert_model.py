@@ -25,16 +25,19 @@ class FineTunedBertModel:
                  test_file_name='test.csv',
                  sample_submission_file_name='sample_submission.csv',
                  bert_module_url="https://tfhub.dev/tensorflow/bert_en_uncased_L-24_H-1024_A-16/1",
-                 hyperparameters=HyperParameters(optimizer='Adam', learning_rate=1e-5, batch_size=16),
+                 hyperparameters=HyperParameters(optimizer='Adam', learning_rate=1e-5, batch_size=4),
                  model_checkpoint='model.h5'):
+        self.bert_module_url = bert_module_url
+        self.init_bert_layer()
+
         self.data_handler = DataHandler(
-            # vocabulary_file=self.bert_layer.resolved_object.vocab_file.asset_path.numpy(),
+            vocabulary_file=self.bert_layer.resolved_object.vocab_file.asset_path.numpy(),
+            lowercase_file=self.bert_layer.resolved_object.do_lower_case.numpy(),
             train_file_name=train_file_name,
             test_file_name=test_file_name,
             sample_submission_file_name=sample_submission_file_name,
             train_split=1)
-        self.bert_module_url = bert_module_url
-        self.init_bert_layer()
+
         self.hyperparameters = hyperparameters
         self.model_checkpoint = ModelCheckpoint(model_checkpoint, monitor='val_loss', save_best_only=True)
 

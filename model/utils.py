@@ -19,14 +19,13 @@ class HyperParameters:
         print(f'Batch size: {self.batch_size}')
         print('******************************************************')
 
-    @staticmethod
-    def get_optimizer(optimizer: str):
+    def get_optimizer(self, optimizer: str):
         if optimizer == 'Adam':
-            return optimizers.Adam()
+            return optimizers.Adam(learning_rate=self.learning_rate)
         elif optimizer == 'Nadam':
-            return optimizers.Nadam()
+            return optimizers.Nadam(learning_rate=self.learning_rate)
         elif optimizer == 'SGD':
-            return optimizers.SGD()
+            return optimizers.SGD(learning_rate=self.learning_rate)
         else:
             ValueError(f'Given optimizer name: {optimizer} is not implemented.')
 
