@@ -1,36 +1,38 @@
 import pandas as pd
-import numpy as np
 import os
-from tensorflow.keras.utils import to_categorical
-from sklearn import preprocessing
-from transformers import BertTokenizer
-import tokenization
+from tensorflow.keras import layers
+import tensorflow as tf
 
-class DataHandler:
+AUTOTUNE = tf.data.AUTOTUNE
+
+
+class DataPipeline:
+    dataframe = None  # required for visualization
+    dataset = None
     sample_submission_data = None
-    train_dataset = None
-    val_dataset = None
-    test_dataset = None
-    text_tokenizer = None
+    submission_test_dataset = None
+    input_vectorizer = None
+    vocabulary_size = 0
+    n_rows = 0
 
     def __init__(self,
-                 vocabulary_file: np.array,
-                 lowercase_file: np.array,
                  train_file_name: str,
                  test_file_name: str,
                  sample_submission_file_name: str,
-                 train_split=0.8):
-        if train_split <= 0 or train_split > 1:
-            raise ValueError('Value of train_split should be in (0,1] inclusive range')
-        self.text_tokenizer = TextTokenizer(vocabulary_file, lowercase_file)
-        self.prepare_data(train_file_name=train_file_name,
-                          test_file_name=test_file_name,
-                          sample_submission_file_name=sample_submission_file_name,
-                          train_split=train_split)
-
+                 target_col_name="target"):
+        self.input_vectorizer = layers.TextVectorization(
+            standardize="lower_and_strip_punctuation",
+            split="whitespace",
+            output_mode="int",
+            max_tokens=5000,  # further hyperparams to investigate
+            output_sequence_length=140)  # further hyperparams to investigate
+        self._prepare_data(train_file_name=train_file_name,
+                           test_file_name=test_file_name,
+                           sample_submission_file_name=sample_submission_file_name,
+                           target_col_name=target_col_name)
 
     @staticmethod
-    def get_datatable_from_csv(csv_file_name: str):
+    def get_dataframe_from_csv(csv_file_name: str):
         """
         :param csv_file_name: str
         :return: pd.DataFrame()
@@ -40,88 +42,93 @@ class DataHandler:
         return pd.read_csv(file_dir, sep=',')
 
     @staticmethod
-    def vectorize_labels(train_data: pd.DataFrame, target_col_name: str):
+    def target_vectorizer(num_tokens: int, output_mode="one_hot"):
+        return layers.CategoryEncoding(num_tokens=num_tokens, output_mode=output_mode)
+
+    def _prepare_data(self, train_file_name: str, test_file_name: str,
+                      sample_submission_file_name: str, target_col_name: str):
         """
-        :param train_data: pd.DataFrame
+        loads data from csv and creates a tf.data.Dataset instance containing all data
+        :param train_file_name: str
+        :param test_file_name: str
+        :param sample_submission_file_name: str
         :param target_col_name: str
-        :return: np.array()
+        :return: None
         """
-        label = preprocessing.LabelEncoder()
-        categorical_data = to_categorical(label.fit_transform(train_data[target_col_name]))
-        return categorical_data
-
-    def prepare_data(self, train_file_name: str, test_file_name: str,
-                     sample_submission_file_name: str, train_split=0.8, target_col_name='target'):
-        if not(train_file_name.endswith('.csv') and test_file_name.endswith('csv')):
+        if not(train_file_name.endswith('.csv') and test_file_name.endswith('.csv')
+               and sample_submission_file_name.endswith(".csv")):
             raise FileNotFoundError('File must be a csv file.')
-        # get train and test data
-        data = self.get_datatable_from_csv(train_file_name).fillna(' ')
-        # labels = self.vectorize_labels(data, target_col_name)
-        labels = data['target'].values
-        test_data = self.get_datatable_from_csv(test_file_name).fillna(' ')
-        self.sample_submission_data = self.get_datatable_from_csv(sample_submission_file_name)
-        self.train_dataset = {
-            'inputs': self.text_tokenizer.tokenize(data),
-            'labels': labels
-        }
-        print(f"Training dataset inputs: {self.train_dataset['inputs'][:6]}")
-        print(f"Training dataset labels: {self.train_dataset['labels'][:6]}")
-        # self.split_data(data, labels, train_split)
-        self.test_dataset = self.text_tokenizer.tokenize(test_data)
+        # get data and create dataset
+        self.dataframe = self.get_dataframe_from_csv(train_file_name).fillna(' ')
+        self.dataset = self._make_dataset(self.dataframe, target_col_name)
 
-    def split_data(self, data: pd.DataFrame, labels: np.array, train_split: float):
-        data_row_size = data.shape[0]
-        train_size = int(data_row_size * train_split)
-        self.train_dataset = {'inputs': data[:train_size], 'labels': labels[:train_size]}
-        print(f"Training dataset inputs: {self.train_dataset['inputs'][:6]}")
-        print(f"Training dataset labels: {self.train_dataset['labels'][:6]}")
-        print(self.train_dataset)
-        if train_split < 1:
-            self.val_dataset = {'inputs': data[train_size:], 'labels': labels[train_size:]}
-            print(f"val_dataset inputs: {self.val_dataset['inputs'][:6]}")
-            print(f"val_dataset labels: {self.val_dataset['labels'][:6]}")
+        # get row count
+        self.n_rows = len(self.dataset)
 
+        # shuffle
+        self.dataset = self.dataset.shuffle(self.n_rows, seed=42)
 
-class TextTokenizer:
-    classification_token = "[CLS]"
-    separator_token = "[SEP]"
-    tokenizer = None
-    bert_tokenizer_name = None
-    vocabulary_file = None
+        # print some examples of the dataset
+        print("-----------------------------------------------------------------------------------------")
+        print(f"Dataset \nSize: {self.n_rows}")
+        print("Dataset examples:")
+        for input_, target in self.dataset.take(3):
+            print(f"Input: {input_}")
+            print(f"Target: {target}")
+        print("-----------------------------------------------------------------------------------------")
 
-    def __init__(self, vocabulary_file: np.array, lowercase_file: np.array,
-                 use_model_tokenizer=True, bert_tokenizer_name="bert-base-uncased"):
-        # self.vocabulary_file = vocabulary_file
-        self.bert_tokenizer_name = bert_tokenizer_name
-        print(f"Bert tokenizer: {bert_tokenizer_name}")
-        if use_model_tokenizer:
-            self.tokenizer = tokenization.FullTokenizer(vocabulary_file, lowercase_file)
+        # KAGGLE related stuff
+        submission_test_data = self.get_dataframe_from_csv(test_file_name).fillna(' ')
+        self.submission_test_dataset = self._make_dataset(submission_test_data, target_col_name='')
+
+        self.vocabulary_size = self.input_vectorizer.vocabulary_size() + 1
+        self.sample_submission_data = self.get_dataframe_from_csv(sample_submission_file_name)
+
+    def _make_dataset(self, dataframe: pd.DataFrame, target_col_name: str, class_num=2):
+        # we do not need "target" column in inputs
+        inputs = dataframe.drop(columns=[target_col_name], inplace=False) if target_col_name != '' else dataframe
+        # here we build our input by concatenating text data
+        inputs = inputs["location"] + ' ' + inputs["keyword"] + ' ' + inputs["text"]
+        # "tensorize" and vectorize
+        inputs = tf.data.Dataset.from_tensor_slices(inputs)
+        self.input_vectorizer.adapt(inputs)
+        inputs = inputs.map(self.input_vectorizer)
+        # adapter to test.csv file which does not have target column
+        if target_col_name != '':
+            targets = dataframe[target_col_name].values
+            targets = tf.data.Dataset.from_tensor_slices(targets).map(self.target_vectorizer(class_num))
+            return tf.data.Dataset.zip((inputs, targets))
         else:
-            self.tokenizer = BertTokenizer.from_pretrained(self.bert_tokenizer_name)
+            return tf.data.Dataset.zip(inputs)
 
-    def tokenize(self, texts: pd.DataFrame, max_length=60):
-        all_tokens = []
-        all_masks = []
-        all_segments = []
-        # rearrange the incoming data
-        texts = texts['location'] + ' ' + texts['keyword'] + ' ' + texts['text']
-        for text in texts:
-            text = self.tokenizer.tokenize(text)
-            # trim the text so that we have equal length texts
-            text = text[:max_length-2]
-            input_sequence = [self.classification_token] + text + [self.separator_token]
-            tokens, padding_mask, segment_ids = self.encode(input_sequence, max_length)
-            all_tokens.append(tokens)
-            all_masks.append(padding_mask)
-            all_segments.append(segment_ids)
 
-        return np.array(all_tokens), np.array(all_masks), np.array(all_segments)
+class BatchPipeline:
+    dataset = None
+    train_dataset = None
+    validation_dataset = None
+    test_dataset = None
+    train_validation_split = 0
+    batch_size = 0
 
-    def encode(self, input_sequence: np.array, max_length: int):
-        padding_length = max_length - len(input_sequence)
-        # convert tokens to ids
-        tokens = self.tokenizer.convert_tokens_to_ids(input_sequence) + [0] * padding_length
-        padding_mask = [1 for _ in range(len(input_sequence))] + [0 for _ in range(padding_length)]
-        segment_ids = [0 for _ in range(max_length)]
+    def __init__(self, dataset: tf.data.Dataset, batch_size: int, train_validation_split=0.8):
+        if train_validation_split <= 0 or train_validation_split >= 1:
+            raise ValueError("The train_validation_split should be between 0 and 1: (0, 1)")
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.train_validation_split = train_validation_split
+        self.n_rows = len(dataset)
+        self.split_data()
 
-        return tokens, padding_mask, segment_ids
+    def split_data(self):
+        validation_size = round(((1 - self.train_validation_split) / 2) * self.n_rows)
+        self.validation_dataset = self.dataset.take(validation_size).batch(batch_size=self.batch_size,
+                                                                           drop_remainder=True)
+        self.validation_dataset = self.validation_dataset.cache().prefetch(buffer_size=AUTOTUNE)
+
+        self.test_dataset = self.dataset.skip(validation_size).take(validation_size).batch(batch_size=self.batch_size,
+                                                                                           drop_remainder=True)
+        self.test_dataset = self.test_dataset.cache().prefetch(buffer_size=AUTOTUNE)
+
+        self.train_dataset = self.dataset.skip(2 * validation_size).batch(batch_size=self.batch_size,
+                                                                          drop_remainder=True)
+        self.train_dataset = self.train_dataset.cache().prefetch(buffer_size=AUTOTUNE)
