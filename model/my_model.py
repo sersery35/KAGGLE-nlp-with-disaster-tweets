@@ -15,12 +15,16 @@ class MyModel:
     optimizer = None
     model = None
     run_name = None
+    class_weights = None
     session_num = 0
 
-    def __init__(self, batch_pipeline, parameters: dict, hyperparameters: dict, hparams: dict):
+    def __init__(self, batch_pipeline, parameters: dict, hyperparameters: dict, hparams: dict,
+                 class_weights: dict):
         self.parameters = parameters
         self.hyperparameters = hyperparameters
         self.hparams = hparams
+        self.class_weights \
+            = class_weights if self.hparams[self.hyperparameters["class_weights"]] == "balanced" else None
         self.batch_pipeline = batch_pipeline
         self._init_datasets()
         self._set_optimizer()
@@ -53,7 +57,8 @@ class MyModel:
                         f"__lr={self.hparams[self.hyperparameters['learning_rate']]}" \
                         f"__hidden_unit={self.hparams[self.hyperparameters['hidden_unit']]}" \
                         f"__batch_size={self.batch_pipeline.batch_size}" \
-                        f"__optimizer={self.hparams[self.hyperparameters['optimizer']]}"
+                        f"__optimizer={self.hparams[self.hyperparameters['optimizer']]}" \
+                        f"__class_weights={self.hparams[self.hyperparameters['class_weights']]}"
         self.model = keras.Sequential([
             keras.layers.Embedding(self.parameters["vocabulary_size"], self.parameters["embedding_dim"]),
             keras.layers.Masking(mask_value=0),
@@ -67,16 +72,17 @@ class MyModel:
                            metrics=['accuracy'])
         print(self.model.summary())
 
-    def fit_model_and_evaluate(self, log_directory):
+    def fit_and_evaluate(self, log_directory):
         print(f"{self.run_name} starting...")
+
         self.model.fit(
             self.train_dataset,
             validation_data=self.validation_dataset,
             epochs=self.parameters["epochs"],
-            callbacks=[keras.callbacks.TensorBoard(log_dir=f'{log_directory}{self.run_name}',
+            callbacks=[keras.callbacks.TensorBoard(log_dir=f"{log_directory}{self.run_name}",
                                                    histogram_freq=1,
-                                                   update_freq='batch')],
-            # no class weights yet, we need to look into class distribution.
+                                                   update_freq="batch")],
+            class_weight=self.class_weights,
         )
 
         test_loss, test_accuracy = self.model.evaluate(self.test_dataset)
@@ -85,7 +91,7 @@ class MyModel:
         print(f"{self.run_name} completed.")
         precision, recall, f1, support = precision_recall_fscore_support(true_labels, predictions, average="macro")
 
-        return test_loss, precision, recall, f1
+        return test_accuracy, precision, recall, f1
 
     def predict_for_kaggle(self, kaggle_test_dataset: tf.data.Dataset):
         return self.model.predict(kaggle_test_dataset).argmax(axis=-1)

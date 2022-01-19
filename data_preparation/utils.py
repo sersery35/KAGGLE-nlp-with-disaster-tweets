@@ -14,31 +14,34 @@ class DataPipeline:
     input_vectorizer = None
     vocabulary_size = 0
     n_rows = 0
+    quiet = None
 
     def __init__(self,
                  train_file_name: str,
                  test_file_name: str,
                  sample_submission_file_name: str,
-                 target_col_name="target"):
+                 target_col_name="target",
+                 vectorize=True,
+                 quiet=False):
+        self.quiet = quiet
         self.input_vectorizer = layers.TextVectorization(
             standardize="lower_and_strip_punctuation",
             split="whitespace",
             output_mode="int",
-            max_tokens=5000,  # further hyperparams to investigate
-            output_sequence_length=140)  # further hyperparams to investigate
+            max_tokens=5000,
+            output_sequence_length=100)  if vectorize else None
         self._prepare_data(train_file_name=train_file_name,
                            test_file_name=test_file_name,
                            sample_submission_file_name=sample_submission_file_name,
                            target_col_name=target_col_name)
 
-    @staticmethod
-    def get_dataframe_from_csv(csv_file_name: str):
+    def get_dataframe_from_csv(self, csv_file_name: str):
         """
         :param csv_file_name: str
         :return: pd.DataFrame()
         """
         file_dir = os.getcwd() + '/data/' + csv_file_name
-        print(f"Getting the file: {file_dir}")
+        print(f"Getting the file: {file_dir}") if not self.quiet else print()
         return pd.read_csv(file_dir, sep=',')
 
     @staticmethod
@@ -68,20 +71,22 @@ class DataPipeline:
         # shuffle
         self.dataset = self.dataset.shuffle(self.n_rows, seed=42)
 
-        # print some examples of the dataset
-        print("-----------------------------------------------------------------------------------------")
-        print(f"Dataset \nSize: {self.n_rows}")
-        print("Dataset examples:")
-        for input_, target in self.dataset.take(3):
-            print(f"Input: {input_}")
-            print(f"Target: {target}")
-        print("-----------------------------------------------------------------------------------------")
+        if not self.quiet:
+            # print some examples of the dataset
+            print("-----------------------------------------------------------------------------------------")
+            print(f"Dataset \nSize: {self.n_rows}")
+            print("Dataset examples:")
+            for input_, target in self.dataset.take(3):
+                print(f"Input: {input_}")
+                print(f"Target: {target}")
+            print("-----------------------------------------------------------------------------------------")
 
         # KAGGLE related stuff
         submission_test_data = self.get_dataframe_from_csv(test_file_name).fillna(' ')
         self.submission_test_dataset = self._make_dataset(submission_test_data, target_col_name='')
 
-        self.vocabulary_size = self.input_vectorizer.vocabulary_size() + 1
+        self.vocabulary_size \
+            = self.input_vectorizer.vocabulary_size() + 1 if self.input_vectorizer is not None else None
         self.sample_submission_data = self.get_dataframe_from_csv(sample_submission_file_name)
 
     def _make_dataset(self, dataframe: pd.DataFrame, target_col_name: str, class_num=2):
@@ -91,8 +96,9 @@ class DataPipeline:
         inputs = inputs["location"] + ' ' + inputs["keyword"] + ' ' + inputs["text"]
         # "tensorize" and vectorize
         inputs = tf.data.Dataset.from_tensor_slices(inputs)
-        self.input_vectorizer.adapt(inputs)
-        inputs = inputs.map(self.input_vectorizer)
+        if self.input_vectorizer is not None:
+            self.input_vectorizer.adapt(inputs)
+            inputs = inputs.map(self.input_vectorizer)
         # adapter to test.csv file which does not have target column
         if target_col_name != '':
             targets = dataframe[target_col_name].values
