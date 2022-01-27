@@ -1,10 +1,13 @@
 import keras
 import tensorflow as tf
 import tensorflow_hub as tf_hub
-from .my_model import MyModel
+from .base_model import BaseModel
 
 
-class FineTunedBertModel(MyModel):
+# TODO: THIS MODEL IS NOT FINE-TUNED YET
+
+
+class FineTunedBertModel(BaseModel):
     """
     this class expects non-vectorized inputs, i.e, set vectorize=False for the DataPipeline instance which is then
     passed to BatchPipeline that is expected in the initialization of this class.
@@ -30,13 +33,7 @@ class FineTunedBertModel(MyModel):
         self._set_model()
 
     def _set_model(self):
-        self.run_name = f"run={self.session_num}" \
-                        f"__lr={self.hparams[self.hyperparameters['learning_rate']]}" \
-                        f"__hidden_unit={self.hparams[self.hyperparameters['hidden_unit']]}" \
-                        f"__batch_size={self.batch_pipeline.batch_size}" \
-                        f"__optimizer={self.hparams[self.hyperparameters['optimizer']]}" \
-                        f"__class_weights={self.hparams[self.hyperparameters['class_weights']]}" \
-                        f"__dropout={self.hparams[self.hyperparameters['dropout']]}"
+        self._set_run_name()
         input_layer = tf.keras.layers.Input(shape=(), dtype=tf.string, name="text")
         preprocess_layer = tf_hub.KerasLayer(self.bert_preprocessor_url, name="preprocess")
         preprocessed_inputs = preprocess_layer(input_layer)
