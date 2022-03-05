@@ -1,5 +1,6 @@
 import pandas as pd
 import tensorflow as tf
+import numpy as np
 from sklearn.utils import class_weight
 from tensorboard.plugins.hparams import api as hp
 import os
@@ -34,3 +35,24 @@ def create_submission_for_kaggle(file_name: str, id_list, predictions):
         predictions_dataframe = pd.DataFrame({"id": id_list, "target": predictions})
         predictions_dataframe.to_csv(submission_file, index=False)
     submission_file.close()
+
+
+def get_angles(pos, i, d_model):
+    angle_rates = 1 / np.power(10000, (2 * (i//2)) / np.float32(d_model))
+    return pos * angle_rates
+
+
+def positional_encoding(position, model_dim):
+    angle_rads = get_angles(np.arange(position)[:, np.newaxis],
+                          np.arange(model_dim)[np.newaxis, :],
+                          model_dim)
+
+    # apply sin to even indices in the array; 2i
+    angle_rads[:, 0::2] = np.sin(angle_rads[:, 0::2])
+
+    # apply cos to odd indices in the array; 2i+1
+    angle_rads[:, 1::2] = np.cos(angle_rads[:, 1::2])
+
+    pos_encoding = angle_rads[np.newaxis, ...]
+
+    return tf.cast(pos_encoding, dtype=tf.float32)

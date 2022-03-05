@@ -2,3 +2,5 @@
 model.h5
 **/logs
 logs/*
+**/glove_embeddings
+glove_embeddings/*
