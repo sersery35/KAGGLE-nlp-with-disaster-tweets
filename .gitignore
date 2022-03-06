@@ -4,3 +4,4 @@ model.h5
 logs/*
 **/glove_embeddings
 glove_embeddings/*
+NameSurname.txt

@@ -5,8 +5,7 @@ import pandas as pd
 import tensorflow as tf
 import string
 import requests
-import zipfile
-from io import BytesIO
+from zipfile import ZipFile
 
 AUTOTUNE = tf.data.AUTOTUNE
 
@@ -25,32 +24,34 @@ class DataPipeline:
     vocabulary_size = 0
     n_rows = 0
     embedding_dim = None
+    # TODO: Decide whether to change these tokens
     tokens = {
+        # TODO: Also can extract tweets from the url and append them to the existing one.
         "url": "<URL>",
         "user": "<USER>",
         "smile": "<SMILE>",
-        "sadface": "<SADFACE>",
-        "neutralface": "<NEUTRALFACE>",
-        "lolface": "<LOLFACE>",
-        "heart": "<HEART>",
+        "sadface": "<SAD>",
+        "neutralface": "<NEUTRAL>",
+        "lolface": "<LOL>",
+        "heart": "<LOVE>",
         "number": "<NUMBER>",
         "allcaps": "<ALLCAPS>",
         "hashtag": "<HASHTAG>",
         "repeat": "<REPEAT>",
         "elong": "<ELONG>"
-    }  # "<LOCATION>", "<KEYWORD>"
+    }
 
     def __init__(self,
                  train_file_name: str,
                  test_file_name: str,
                  sample_submission_file_name: str,
                  vocabulary_size: int,
-                 output_sequence_length=140,
-                 embedding_dim=100):
+                 output_sequence_length=30,
+                 glove_embedding_dim=100):
         self.train_file_name = train_file_name
         self.test_file_name = test_file_name
         self.sample_submission_file_name = sample_submission_file_name
-        self.embedding_dim = embedding_dim
+        self.glove_embedding_dim = glove_embedding_dim
         self.vocabulary_size = vocabulary_size
         self.input_vectorizer = tf.keras.layers.TextVectorization(standardize="lower_and_strip_punctuation",
                                                                   split="whitespace",
@@ -67,11 +68,11 @@ class DataPipeline:
         if not csv_file_name.endswith(".csv"):
             raise FileNotFoundError('File must be a csv file.')
 
-        file_dir = '../data/' + csv_file_name
+        file_dir = f'../data/{csv_file_name}'
         print(f"Getting the file: {file_dir}")
         return pd.read_csv(file_dir, sep=',')
 
-    def prepare_datasets(self, include_cols=["location", "keyword"]):
+    def prepare_dataset(self, include_cols=["location", "keyword"], apply_preprocessing=True):
         """
         loads data from csv and creates a tf.data.Dataset instance containing all data
         :return: tf.data.Dataset
@@ -84,41 +85,43 @@ class DataPipeline:
         # concatenate location keyword and text then pass to tokenization
         if len(include_cols) > 0:
             for col in include_cols:
-                dataframe["text"] += (" " + dataframe[col])
-        self.dataframe = self.tokenize_dataframe(dataframe)
+                dataframe["text"] = dataframe[col] + " " + dataframe["text"]
+        self.dataframe = self.tokenize_dataframe(dataframe) if apply_preprocessing else dataframe
         # we need to remove some unnecessary entries
-        self.dataframe.drop(self.dataframe[self.dataframe["text"].map(lambda entry: len(entry.split(" ")) < 3)].index,
+        print(f"Dataframe size before eliminating too short texts: {len(self.dataframe)}")
+        self.dataframe.drop(self.dataframe[self.dataframe["text"].map(lambda entry: len(entry.split(" ")) < 5)].index,
                             inplace=True)
+        print(f"Dataframe size after eliminating too short texts: {len(self.dataframe)}")
         print(self.dataframe)
         dataset = self.make_dataset(dataframe["text"], targets=dataframe["target"])
         # get row count
         n_rows = tf.data.experimental.cardinality(dataset).numpy()
 
-        # shuffle
-        dataset = dataset.shuffle(n_rows, seed=42, reshuffle_each_iteration=False)
-
         # print some examples of the dataset
         print("-----------------------------------------------------------------------------------------")
-        print(f"Dataset \nSize: {n_rows}")
+        print(f"Dataset \nSize: {n_rows} data points")
         print("Dataset examples:")
         for input_, target in dataset.take(3):
             print(f"Input: {input_}")
             print(f"Target: {target}")
         print("-----------------------------------------------------------------------------------------")
 
+        return dataset
+
+    def prepare_submission_dataset(self, include_cols=["location", "keyword"], apply_preprocessing=True):
         # KAGGLE related stuff
         submission_test_dataframe = self.get_dataframe_from_csv(self.test_file_name).fillna(" ")
-
-        submission_test_dataframe["text"] = submission_test_dataframe["location"] + " " + \
-                                            submission_test_dataframe["keyword"] + " " + \
-                                            submission_test_dataframe["text"]
-        submission_test_dataframe = self.tokenize_dataframe(submission_test_dataframe)
-        submission_test_dataset = self.make_dataset(submission_test_dataframe["text"])
+        if len(include_cols) > 0:
+            for col in include_cols:
+                submission_test_dataframe["text"] = submission_test_dataframe[col] + " " + submission_test_dataframe[
+                    "text"]
+        submission_test_dataframe = self.tokenize_dataframe(
+            submission_test_dataframe) if apply_preprocessing else submission_test_dataframe
 
         # self.vocabulary_size = self.input_vectorizer.vocabulary_size()
         self.sample_submission_data = self.get_dataframe_from_csv(self.sample_submission_file_name)
 
-        return dataset, submission_test_dataset
+        return self.make_dataset(submission_test_dataframe["text"])
 
     def make_dataset(self, inputs: pd.DataFrame, class_num=2, **kwargs):
         """
@@ -132,6 +135,7 @@ class DataPipeline:
         if self.input_vectorizer is not None:
             self.input_vectorizer.adapt(inputs)
             inputs = inputs.map(self.input_vectorizer)
+            print(f"Vocabulary size of the vectorizer: {self.input_vectorizer.vocabulary_size()}")
         # adapter to test.csv file which does not have target column
         if kwargs.get('targets', None) is not None:
             target_vectorizer = tf.keras.layers.CategoryEncoding(num_tokens=class_num, output_mode="one_hot")
@@ -158,36 +162,41 @@ class DataPipeline:
                     else:
                         # transform encoded space char ('%20') back to a space (' ')
                         text = re.sub(r'%20', " ", re.sub(r' ', "", text))
-                        # remove quotation marks
-                        text = re.sub(r'\'', "", re.sub(r'"', "", text))
+                        # remove punctuation
+                        translator = str.maketrans('', '', string.punctuation)
+                        text = text.lower().translate(translator)
                         # clear newline
                         text = re.sub(r'\r', "", re.sub("\n", "", text))
+                        # location and keyword should not be too many words
+                        words = text.split(' ')
+                        if len(words) > 5:
+                            text = " ".join(words[0:5])
                     clean_keywords.append(text)
             dataframe[col_name] = clean_keywords
-
         return dataframe
 
-    def tokenize_dataframe(self, dataframe: pd.DataFrame, col_name="text"):
+    def tokenize_dataframe(self, dataframe: pd.DataFrame):
         """
         wrapper function for tokenize
         :param dataframe: a pd.DataFrame whose column `text_col_name` will be tokenized
-        :param col_name: the name of the column that contains the data to be tokenized
-        :return:
+        :return: pd.DataFrame
         """
         clean_text_col = []
-        for text in dataframe[col_name].values:
+        for text in dataframe["text"].values:
             text = self.tokenize(text)
             clean_text_col.append(text)
         dataframe["text"] = clean_text_col
 
         return dataframe
 
-    def tokenize(self, text: str):
+    def tokenize(self, text: str, remove_numbers=True, handle_extras=False):
         """
         adapted from https://nlp.stanford.edu/projects/glove/preprocess-twitter.rb
         in this method we collect what we can and then clean up before passing to the TextVectorization
         layer with standardization
         :param text: text to be tokenized
+        :param remove_numbers: bool, removes numbers from the text if true
+        :param handle_extras: bool, handles extra stuff, not necessary for this dataset
         :return: str, cleaned tokenized text
         """
         # print(f"Text before tokenization: {text}")
@@ -216,8 +225,15 @@ class DataPipeline:
         text = re.sub(fr'{eyes}{nose}[\/|l*]', f" {self.tokens['neutralface']} ", text)
         # heart
         text = re.sub(r'<3', f" {self.tokens['heart']} ", text)
-        # numbers
-        text = re.sub(r'[-+]?[.\d]*[\d]+[:,.\d]*', f" {self.tokens['number']} ", text)
+        # numbers: put space before and after
+        # TODO: Maybe parse out time, date etc. and repurpose them?
+        # numbers = re.findall(r'[-+]?[.\d]*[\d]+[:,.\d]*', text) -> this regex finds all formats
+        numbers = re.findall(r'\d+', text)
+        for number in numbers:
+            if remove_numbers:
+                text = re.sub(rf'({number})', f" ", text)
+            else:
+                text = re.sub(rf'({number})', f" {number} ", text)
         # hashtag: the regex in the website is buggy, i.e, includes brackets to the hashtag body, so we modify it
         # to capture only alphanumeric characters
         hashtag_regex = r'#[A-Za-z0-9]+'
@@ -230,50 +246,56 @@ class DataPipeline:
                 hashtag_replacement = None
                 # remove the hashtag char (#)
                 hashtag_body = hashtag[1:]
+                # skip this check : we do not want to use "hashtag" word unnecessarily
                 # first check if the body already contains any tokens
-                for token in self.tokens:
-                    if token in hashtag_body:
-                        hashtag_replacement = token
-                        break
+                # for token in self.tokens:
+                #     if token in hashtag_body:
+                #         hashtag_replacement = token
+                #         break
 
-                if hashtag_replacement is None:
-                    # check if the hashtag is in all uppercase
-                    if hashtag_body.isupper():
-                        hashtag_replacement = f" {self.tokens['hashtag']} " + hashtag_body + f" {self.tokens['allcaps']} "
-                    else:
-                        # first split camelCase or PascalCase hashtags into words
-                        words = re.split(r'(?=[A-Z])', hashtag_body)
-                        # here we remove '' element if existent
-                        if '' in words:
-                            words.remove('')
-                        hashtag_replacement = f" {self.tokens['hashtag']} " + " ".join(words)
+                # if hashtag_replacement is None:
+                # check if the hashtag is in all uppercase
+                if hashtag_body.isupper():
+                    # hashtag_replacement = f" {self.tokens['hashtag']} " + hashtag_body + f" {self.tokens['allcaps']} "
+                    hashtag_replacement = hashtag_body
+                else:
+                    # first split camelCase or PascalCase hashtags into words
+                    words = re.split(r'(?=[A-Z])', hashtag_body)
+                    # here we remove '' element if existent
+                    if '' in words:
+                        words.remove('')
+                    # hashtag_replacement = f" {self.tokens['hashtag']} " + " ".join(words)
+                    hashtag_replacement = " ".join(words)
 
                 text = re.sub(hashtag, hashtag_replacement, text)
 
+        # ############################################## NOT RELEVANT ############################################## #
         # not necessary for this project.
-        # # punctuation repetitions
-        # punctuation_repetition_regex = r'([!?.,]){2,}'
-        # repeated_punctuations = re.findall(punctuation_repetition_regex, text)
-        # # print(f"Repeated punctuations : {repeated_punctuations}")
-        # if repeated_punctuations is not None:
-        #     # iterate for each match
-        #     for repeated_punctuation in repeated_punctuations:
-        #         # replace repeating punctuations with <REPEAT> token
-        #         # repeated_punctuation_replacement = repeated_punctuation[0] + f" {self.tokens['repeat']} "
-        #         repeated_punctuation_replacement = repeated_punctuation[0]
-        #         text = re.sub(punctuation_repetition_regex, repeated_punctuation_replacement, text)
-        # # elongated words (e.g. heyyyyyyy => hey <ELONG> )
-        # elongated_words_regex = r'\b(\S*?)(.)\2{2,}\b'
-        # elongated_words = re.findall(elongated_words_regex, text)
-        # # print(f"Elongated words: {elongated_words}")
-        # if elongated_words is not None:
-        #     # iterate for each match
-        #     for elongated_word in elongated_words:
-        #         # replace elongated word with the <ELONG> token
-        #         # elongated_word_replacement = elongated_word[0] + elongated_word[1] + f" {self.tokens['elong']} "
-        #         elongated_word_replacement = elongated_word[0] + elongated_word[1]
-        #         text = re.sub(elongated_words_regex, elongated_word_replacement, text)
+        if handle_extras:
+            # punctuation repetitions
+            punctuation_repetition_regex = r'([!?.,]){2,}'
+            repeated_punctuations = re.findall(punctuation_repetition_regex, text)
+            # print(f"Repeated punctuations : {repeated_punctuations}")
+            if repeated_punctuations is not None:
+                # iterate for each match
+                for repeated_punctuation in repeated_punctuations:
+                    # replace repeating punctuations with <REPEAT> token
+                    # repeated_punctuation_replacement = repeated_punctuation[0] + f" {self.tokens['repeat']} "
+                    repeated_punctuation_replacement = repeated_punctuation[0]
+                    text = re.sub(punctuation_repetition_regex, repeated_punctuation_replacement, text)
+            # elongated words (e.g. heyyyyyyy => hey <ELONG> )
+            elongated_words_regex = r'\b(\S*?)(.)\2{2,}\b'
+            elongated_words = re.findall(elongated_words_regex, text)
+            # print(f"Elongated words: {elongated_words}")
+            if elongated_words is not None:
+                # iterate for each match
+                for elongated_word in elongated_words:
+                    # replace elongated word with the <ELONG> token
+                    # elongated_word_replacement = elongated_word[0] + elongated_word[1] + f" {self.tokens['elong']} "
+                    elongated_word_replacement = elongated_word[0] + elongated_word[1]
+                    text = re.sub(elongated_words_regex, elongated_word_replacement, text)
 
+        # ############################################## NOT RELEVANT ############################################## #
         # print(f"before case transform: {text}")
 
         # remove extra spaces
@@ -293,37 +315,51 @@ class DataPipeline:
         :return: dict()
         """
         possible_embedding_dims = [25, 50, 100, 200]
-        if self.embedding_dim not in possible_embedding_dims:
+        if self.glove_embedding_dim not in possible_embedding_dims:
             raise ValueError(f"embedding_dim can only be one of these: {possible_embedding_dims}")
 
         # we go back to the parent which is the root. (This method is called from notebooks/<a notebook>.ipynb)
-        file_dir = os.getcwd() + f'/../glove_embeddings/twitter/'
-        file_name = 'glove.twitter.27B.{self.embedding_dim}d.txt'
+        notebooks_dir = '/notebooks'
+        files_dir = re.sub(notebooks_dir, "", os.getcwd()) + '/glove_embeddings/twitter'
+        file_name = f'glove.twitter.27B.{self.glove_embedding_dim}d.txt'
 
-        # download the zip file if file does not exist
-        if not os.path.exists(file_dir+file_name):
+        # download the zip file, then extract if file does not exist
+        if not os.path.exists(os.path.join(files_dir, file_name)):
+            print("It seems like you do not have the required embeddings for this setting.\n"
+                  "The required step are being executed... \n")
             url = 'https://nlp.stanford.edu/data/glove.twitter.27B.zip'
-            zip_file_name = url.split('/')[-1]
             # first make the directory if it does not exist
-            if not os.path.exists(file_dir):
-                os.mkdir(file_dir)
+            if not os.path.exists(files_dir):
+                # mode = 0o666
+                os.makedirs(files_dir)
+                print(f"Directory created: {files_dir} \n")
             # download the file
-            print("Download has started...")
-            req = requests.get(url)
-            with open(file_dir+zip_file_name, 'wb') as output_file:
-                output_file.write(req.content)
-            print("Download completed, now unzipping...")
-            zip_file = zipfile.ZipFile(BytesIO(req.content))
-            zip_file.extractall(file_dir+zip_file_name)
-            print("Unzipping completed, loading the file...")
+            print("Download has started...\n")
+            # with a bit of help from https://pythonguides.com/download-zip-file-from-url-using-python/
+            # unfortunately, for some reason unzipping without writing the zip to the disk is a bit buggy.
+            # therefore, we write the zip to the disk, unzip it, then delete the zip file.
+            response = requests.get(url)
+            zip_file_name = url.split('/')[-1]
+            zip_files_dir = os.path.join(files_dir, zip_file_name)
+
+            with open(zip_files_dir, 'wb') as output_file:
+                output_file.write(response.content)
+            print("Download completed, now unzipping...\n")
+            zip_file = ZipFile(zip_files_dir)
+            zip_file.extractall(files_dir)
+            print(f"Unzipping completed, extracted all files to {files_dir}. \n")
+            # remove the zip file
+            os.remove(zip_files_dir)
+            print("Removed the zip file")
+            print(f"Loading the file: {file_name} \n")
 
         embeddings_index_map = {}
-        with open(file_dir+file_name) as file:
+        with open(os.path.join(files_dir, file_name)) as file:
             for line in file:
                 word, coefs = line.split(maxsplit=1)
                 coefs = np.fromstring(coefs, "f", sep=" ")
                 embeddings_index_map[word] = coefs
-        print(f"Found {len(embeddings_index_map)} word vectors")
+        print(f"Found {len(embeddings_index_map)} word vectors \n")
         return embeddings_index_map
 
     def _get_word_index_map(self):
@@ -346,7 +382,7 @@ class DataPipeline:
         misses = 0
 
         # prepare embedding matrix
-        embedding_matrix = np.zeros((num_tokens, self.embedding_dim))
+        embedding_matrix = np.zeros((num_tokens, self.glove_embedding_dim))
         for word, i in word_index_map.items():
             embedding_vector = glove_embeddings_index_map.get(word)
             if embedding_vector is not None:
@@ -369,36 +405,29 @@ class BatchPipeline:
     train_dataset = None
     validation_dataset = None
     test_dataset = None
-    submission_test_dataset = None
     train_validation_split = 0
     batch_size = 0
 
-    def __init__(self, dataset: tf.data.Dataset, submission_test_dataset: tf.data.Dataset,
-                 batch_size: int, train_validation_split=0.7):
+    def __init__(self, dataset: tf.data.Dataset, batch_size: int, train_validation_split=0.6):
         if train_validation_split <= 0 or train_validation_split >= 1:
             raise ValueError("The train_validation_split should be between 0 and 1: (0, 1)")
-        self.dataset = dataset
-        self.submission_test_dataset = submission_test_dataset
+        # shuffle
+        n_rows = tf.data.experimental.cardinality(dataset).numpy()
+        dataset = dataset.shuffle(n_rows, seed=42, reshuffle_each_iteration=False)
         self.batch_size = batch_size
         self.train_validation_split = train_validation_split
-        self.split_data()
+        self.split_data(dataset, n_rows)
 
-    def split_data(self):
-        n_rows = tf.data.experimental.cardinality(self.dataset).numpy()
+    def split_data(self, dataset: tf.data.Dataset, n_rows: int):
         validation_size = round(((1 - self.train_validation_split) / 2) * n_rows)
-        self.validation_dataset = self.dataset.take(validation_size).batch(batch_size=self.batch_size,
-                                                                           drop_remainder=True)
+        self.validation_dataset = dataset.take(validation_size).batch(batch_size=self.batch_size,
+                                                                      drop_remainder=True)
         self.validation_dataset = self.validation_dataset.cache().prefetch(buffer_size=AUTOTUNE)
 
-        self.test_dataset = self.dataset.skip(validation_size).take(validation_size).batch(batch_size=self.batch_size,
-                                                                                           drop_remainder=True)
+        self.test_dataset = dataset.skip(validation_size).take(validation_size).batch(batch_size=self.batch_size,
+                                                                                      drop_remainder=True)
         self.test_dataset = self.test_dataset.cache().prefetch(buffer_size=AUTOTUNE)
 
-        self.train_dataset = self.dataset.skip(2 * validation_size).batch(batch_size=self.batch_size,
-                                                                          drop_remainder=True)
+        self.train_dataset = dataset.skip(2 * validation_size).batch(batch_size=self.batch_size,
+                                                                     drop_remainder=True)
         self.train_dataset = self.train_dataset.cache().prefetch(buffer_size=AUTOTUNE)
-
-        if self.submission_test_dataset is not None:
-            self.submission_test_dataset = self.submission_test_dataset.batch(batch_size=self.batch_size)
-            self.submission_test_dataset = self.submission_test_dataset.cache().prefetch(buffer_size=AUTOTUNE)
-

@@ -1,15 +1,19 @@
 import tensorflow as tf
 from .utils import positional_encoding
 
+# used the self-attention model in 14 Neural Networks Sanity Checks.ipynb
+
 
 class Classifier(tf.keras.Model):
     should_train_embedding_layer = True
 
-    def __init__(self, model_dim, feed_forward_dim, num_heads, vocab_size, n_labels, maximum_position_encoding,
-                 embeddings_initializer=tf.keras.initializers.get('uniform'), dropout_rate=0.1):
+    def __init__(self, model_dim: int, feed_forward_dim: int, num_heads: int, vocab_size: int, n_labels: int,
+                 maximum_position_encoding: int, embeddings_initializer=tf.keras.initializers.get('uniform'),
+                 dropout_rate=0.1):
         super().__init__()
 
         assert model_dim % num_heads == 0, "model_dim must be a multiple of num_heads"
+        # if the embedding layer is a constant then we must not train the layer.
         if isinstance(embeddings_initializer, tf.keras.initializers.Constant):
             self.should_train_embedding_layer = False
         self.embedding = EmbeddingLayer(model_dim, vocab_size, maximum_position_encoding, embeddings_initializer,

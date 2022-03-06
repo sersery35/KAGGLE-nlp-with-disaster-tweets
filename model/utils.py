@@ -7,6 +7,29 @@ import os
 import shutil
 
 
+class HyperparameterManager:
+    optimizer = None
+    class_weights = None
+    batch_size = None
+    learning_rate = None
+    dropout = None
+
+    def __init__(self, hparams: dict()):
+        for key in hparams.keys():
+            if key.name == 'optimizer':
+                self.optimizer = hparams[key]
+            elif key.name == 'class_weights':
+                self.class_weights = hparams[key]
+            elif key.name == 'batch_size':
+                self.batch_size = hparams[key]
+            elif key.name == 'learning_rate':
+                self.learning_rate = hparams[key]
+            elif key.name == 'dropout':
+                self.dropout = hparams[key]
+            else:
+                raise ValueError(f'The key {key} is not defined in this class.')
+
+
 def get_balanced_class_weights(dataframe: pd.DataFrame):
     targets = dataframe["target"]
     balanced_class_weights = dict(enumerate(class_weight.compute_class_weight("balanced",

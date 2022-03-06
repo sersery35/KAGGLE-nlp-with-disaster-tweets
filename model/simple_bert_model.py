@@ -7,7 +7,7 @@ from .base_model import BaseModel
 # TODO: THIS MODEL IS NOT FINE-TUNED YET
 
 
-class FineTunedBertModel(BaseModel):
+class SimpleBertModel(BaseModel):
     """
     this class expects non-vectorized inputs, i.e, set vectorize=False for the DataPipeline instance which is then
     passed to BatchPipeline that is expected in the initialization of this class.

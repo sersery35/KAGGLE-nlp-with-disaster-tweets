@@ -19,62 +19,61 @@ class BaseModel:
     train_dataset = None
     validation_dataset = None
     test_dataset = None
-    hyperparameters = None
-    hparams = None
+    hparam_manager = None
     # outputs
     model = None
     run_name = None
     history = None
 
     def __init__(self, vocabulary_size: int, embedding_dim: int, lstm_dim: int, hidden_dim: int, n_labels: int,
-                 epochs: int, batch_pipeline, hyperparameters: dict, hparams: dict, class_weights: dict):
+                 encoder: tf.keras.layers.TextVectorization, epochs: int, batch_pipeline, hparam_manager,
+                 class_weights: dict):
         self.vocabulary_size = vocabulary_size
         self.embedding_dim = embedding_dim
         self.lstm_dim = lstm_dim
         self.hidden_dim = hidden_dim
         self.n_labels = n_labels
         self.epochs = epochs
-        self.hyperparameters = hyperparameters
-        self.hparams = hparams
-        self.class_weights \
-            = class_weights if self.hparams[self.hyperparameters["class_weights"]] == "balanced" else None
+        self.hparam_manager = hparam_manager
+        self.class_weights = class_weights if self.hparam_manager.class_weights == "balanced" else None
         self.batch_pipeline = batch_pipeline
         optimizer = self._set_optimizer()
-        self._set_model(optimizer)
+        self._set_model(optimizer, encoder)
 
     def _set_optimizer(self):
         train_dataset_len = tf.data.experimental.cardinality(self.batch_pipeline.train_dataset).numpy()
-        if self.hparams[self.hyperparameters["optimizer"]] == "sgd":
-            return keras.optimizers.SGD(learning_rate=self.hparams[self.hyperparameters["learning_rate"]])
-        elif self.hparams[self.hyperparameters["optimizer"]] == "adam":
-            return keras.optimizers.Adam(learning_rate=self.hparams[self.hyperparameters["learning_rate"]])
-        elif self.hparams[self.hyperparameters["optimizer"]] == "adamw":
+        if self.hparam_manager.optimizer == "sgd":
+            return keras.optimizers.SGD(learning_rate=self.hparam_manager.learning_rate)
+        elif self.hparam_manager.optimizer == "adam":
+            return keras.optimizers.Adam(learning_rate=self.hparam_manager.learning_rate)
+        elif self.hparam_manager.optimizer == "adamw":
             return optimization.create_optimizer(
-                init_lr=self.hparams[self.hyperparameters["learning_rate"]],
+                init_lr=self.hparam_manager.learning_rate,
                 num_train_steps=self.epochs * train_dataset_len,
                 num_warmup_steps=round(0.1 * self.epochs * train_dataset_len),
                 optimizer_type="adamw")
         else:
             raise ValueError(f"No implementation exists for the given optimizer: "
-                             f"{self.hparams[self.hyperparameters['optimizer']]}")
+                             f"{self.hparam_manager.optimizer}")
 
     def _set_run_name(self):
         self.run_name = f"run -> " \
-                        f"__lr={self.hparams[self.hyperparameters['learning_rate']]}" \
+                        f"__lr={self.hparam_manager.learning_rate}" \
                         f"__batch_size={self.batch_pipeline.batch_size}" \
-                        f"__optimizer={self.hparams[self.hyperparameters['optimizer']]}" \
-                        f"__class_weights={self.hparams[self.hyperparameters['class_weights']] or 'None'}" \
-                        f"__dropout={self.hparams[self.hyperparameters['dropout']]}"
+                        f"__optimizer={self.hparam_manager.optimizer}" \
+                        f"__class_weights={self.hparam_manager.class_weights or 'None'}" \
+                        f"__dropout={self.hparam_manager.dropout}"
 
-    def _set_model(self, optimizer):
+    def _set_model(self, optimizer, encoder):
+
         self._set_run_name()
         self.model = keras.Sequential([
             keras.layers.Embedding(self.vocabulary_size, self.embedding_dim, mask_zero=True),
+            keras.layers.Dropout(self.hparam_manager.dropout),
             keras.layers.Bidirectional(keras.layers.LSTM(self.lstm_dim, return_sequences=True)),
-            keras.layers.Dense(self.hidden_dim, activation=nn.leaky_relu),
+            keras.layers.Dense(self.hidden_dim, activation=nn.relu),  # could be leaky_relu
             keras.layers.GlobalAveragePooling1D(),
-            keras.layers.Dropout(self.hparams[self.hyperparameters["dropout"]]),
-            keras.layers.Dense(self.n_labels, activation=nn.softmax)
+            keras.layers.Dense(self.n_labels, activation=nn.softmax)  # could be sigmoid too.
         ])
 
         self.model.compile(optimizer=optimizer,
@@ -85,7 +84,7 @@ class BaseModel:
     def fit_and_evaluate(self, log_directory):
         print(f"{self.run_name} starting...")
 
-        self.history = self.model.fit(
+        res = self.model.fit(
             self.batch_pipeline.train_dataset,
             validation_data=self.batch_pipeline.validation_dataset,
             epochs=self.epochs,
@@ -93,7 +92,7 @@ class BaseModel:
                                                    histogram_freq=1,
                                                    update_freq="batch")],
             class_weight=self.class_weights)
-
+        self.history = res.history
         test_loss, test_accuracy = self.model.evaluate(self.batch_pipeline.test_dataset)
         true_labels = np.concatenate([y for x, y in self.batch_pipeline.test_dataset], axis=0).argmax(axis=-1)
         predictions = self.model.predict(self.batch_pipeline.test_dataset).argmax(axis=-1)
