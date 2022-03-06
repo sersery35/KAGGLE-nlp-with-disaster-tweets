@@ -25,6 +25,7 @@ class DataPipeline:
     vocabulary_size = 0
     n_rows = 0
     embedding_dim = None
+    glove_url = None
     # TODO: Decide whether to change these tokens
     tokens = {
         # TODO: Also can extract tweets from the url and append them to the existing one.
@@ -48,54 +49,46 @@ class DataPipeline:
                  sample_submission_file_name: str,
                  max_vocabulary_size: int,
                  output_sequence_length=30,
-                 glove_embedding_dim=100):
+                 glove_embedding_dim=100,
+                 glove_url='https://nlp.stanford.edu/data/glove.twitter.27B.zip'):
+        # check if the glove_embedding_dim is a possible embedding dim
+        assert glove_embedding_dim in [25, 50, 100, 200, 300]
+
         self.train_file_name = train_file_name
         self.test_file_name = test_file_name
         self.sample_submission_file_name = sample_submission_file_name
         self.glove_embedding_dim = glove_embedding_dim
+        self.glove_url = glove_url
         self.input_vectorizer = tf.keras.layers.TextVectorization(standardize="lower_and_strip_punctuation",
                                                                   split="whitespace",
                                                                   output_mode="int",
                                                                   max_tokens=max_vocabulary_size,
                                                                   output_sequence_length=output_sequence_length)
 
-    @staticmethod
-    def get_dataframe_from_csv(csv_file_name: str):
-        """
-        :param csv_file_name: str
-        :return: pd.DataFrame()
-        """
-        if not csv_file_name.endswith(".csv"):
-            raise FileNotFoundError('File must be a csv file.')
-
-        file_dir = f'../data/{csv_file_name}'
-        print(f"Getting the file: {file_dir}")
-        return pd.read_csv(file_dir, sep=',')
-
     def prepare_dataset(self, include_cols=["location", "keyword"], apply_preprocessing=True,
-                        download_mentioned_tweets=True):
+                        download_mentioned_tweets=False):
         """
         loads data from csv and creates a tf.data.Dataset instance containing all data
         :return: tf.data.Dataset
         """
         # get data and create dataset
-        dataframe = self.get_dataframe_from_csv(self.train_file_name).fillna(' ')
+        dataframe = self._get_dataframe_from_csv(self.train_file_name).fillna(' ')
         if download_mentioned_tweets:
-            dataframe = self.extract_urls(dataframe)
+            dataframe = self._extract_urls(dataframe)
         # clear the text with pre-determined patterns
-        dataframe = self.clear_keywords(dataframe)
+        dataframe = self._clear_keywords(dataframe)
         # concatenate location keyword and text then pass to tokenization
         if len(include_cols) > 0:
             for col in include_cols:
                 dataframe["text"] = dataframe[col] + " " + dataframe["text"]
-        self.dataframe = self.tokenize_dataframe(dataframe) if apply_preprocessing else dataframe
+        self.dataframe = self._tokenize_dataframe(dataframe) if apply_preprocessing else dataframe
         # we need to remove some unnecessary entries
         print(f"Dataframe size before eliminating too short texts: {len(self.dataframe)}")
         self.dataframe.drop(self.dataframe[self.dataframe["text"].map(lambda entry: len(entry.split(" ")) < 5)].index,
                             inplace=True)
         print(f"Dataframe size after eliminating too short texts: {len(self.dataframe)}")
         print(self.dataframe)
-        dataset = self.make_dataset(dataframe["text"], targets=dataframe["target"])
+        dataset = self._make_dataset(dataframe["text"], targets=dataframe["target"])
         # get row count
         n_rows = tf.data.experimental.cardinality(dataset).numpy()
 
@@ -118,20 +111,20 @@ class DataPipeline:
         :return: a tensorflow dataset
         """
         # KAGGLE related stuff
-        submission_test_dataframe = self.get_dataframe_from_csv(self.test_file_name).fillna(" ")
+        submission_test_dataframe = self._get_dataframe_from_csv(self.test_file_name).fillna(" ")
         if len(include_cols) > 0:
             for col in include_cols:
                 submission_test_dataframe["text"] = submission_test_dataframe[col] + " " + submission_test_dataframe[
                     "text"]
-        submission_test_dataframe = self.tokenize_dataframe(
+        submission_test_dataframe = self._tokenize_dataframe(
             submission_test_dataframe) if apply_preprocessing else submission_test_dataframe
 
         # self.vocabulary_size = self.input_vectorizer.vocabulary_size()
-        self.sample_submission_data = self.get_dataframe_from_csv(self.sample_submission_file_name)
+        self.sample_submission_data = self._get_dataframe_from_csv(self.sample_submission_file_name)
 
-        return self.make_dataset(submission_test_dataframe["text"])
+        return self._make_dataset(submission_test_dataframe["text"])
 
-    def make_dataset(self, inputs: pd.DataFrame, class_num=2, **kwargs):
+    def _make_dataset(self, inputs: pd.DataFrame, class_num=2, **kwargs):
         """
         :param inputs: pd.DataFrame containing all data.
         :param class_num: int, number of classes to be predicted
@@ -142,6 +135,7 @@ class DataPipeline:
         inputs = tf.data.Dataset.from_tensor_slices(inputs)
         self.input_vectorizer.adapt(inputs)
         inputs = inputs.map(self.input_vectorizer)
+
         print(f"Vocabulary size of the vectorizer: {self.input_vectorizer.vocabulary_size()}")
         self.vocabulary_size = self.input_vectorizer.vocabulary_size()
 
@@ -155,7 +149,20 @@ class DataPipeline:
             return tf.data.Dataset.zip((inputs,))
 
     @staticmethod
-    def clear_keywords(dataframe: pd.DataFrame):
+    def _get_dataframe_from_csv(csv_file_name: str):
+        """
+        :param csv_file_name: str
+        :return: pd.DataFrame()
+        """
+        if not csv_file_name.endswith(".csv"):
+            raise FileNotFoundError('File must be a csv file.')
+
+        file_dir = f'../data/{csv_file_name}'
+        print(f"Getting the file: {file_dir}")
+        return pd.read_csv(file_dir, sep=',')
+
+    @staticmethod
+    def _clear_keywords(dataframe: pd.DataFrame):
         """
         :param dataframe: pandas.DataFrame
         :return: pandas.DataFrame
@@ -185,10 +192,11 @@ class DataPipeline:
         return dataframe
 
     @staticmethod
-    def extract_urls(dataframe, silent=True):
+    def _extract_urls(dataframe, silent=True):
         """
            method extracts urls from a dataframe
            :param dataframe: pd.DataFrame, dataframe to be processed
+           :param silent: bool, prints out the extracted urls if True
            :return: pd.DataFrame with an extra url column with the corresponding urls
            """
         # capture url domain and dir, join them to create a downloadable link then remove quotation marks
@@ -202,7 +210,7 @@ class DataPipeline:
         dataframe["url"] = urls
         return dataframe
 
-    def tokenize_dataframe(self, dataframe: pd.DataFrame):
+    def _tokenize_dataframe(self, dataframe: pd.DataFrame):
         """
         wrapper function for tokenize
         :param dataframe: a pd.DataFrame whose column `text_col_name` will be tokenized
@@ -210,13 +218,13 @@ class DataPipeline:
         """
         clean_text_col = []
         for text in dataframe["text"].values:
-            text = self.tokenize(text)
+            text = self._tokenize(text)
             clean_text_col.append(text)
         dataframe["text"] = clean_text_col
 
         return dataframe
 
-    def tokenize(self, text: str, remove_numbers=True, handle_extras=False):
+    def _tokenize(self, text: str, remove_numbers=True, handle_extras=False):
         """
         adapted from https://nlp.stanford.edu/projects/glove/preprocess-twitter.rb
         in this method we collect what we can and then clean up before passing to the TextVectorization
@@ -258,7 +266,7 @@ class DataPipeline:
         numbers = re.findall(r'\d+', text)
         for number in numbers:
             if remove_numbers:
-                text = re.sub(rf'({number})', f" ", text)
+                text = re.sub(rf'({number})', " ", text)
             else:
                 text = re.sub(rf'({number})', f" {number} ", text)
         # hashtag: the regex in the website is buggy, i.e, includes brackets to the hashtag body, so we modify it
@@ -338,47 +346,29 @@ class DataPipeline:
 
     def _load_glove_embeddings(self):
         """
+        method loads the glove embeddings into a dict
         https://keras.io/examples/nlp/pretrained_word_embeddings/
         :return: dict()
         """
-        possible_embedding_dims = [25, 50, 100, 200]
-        if self.glove_embedding_dim not in possible_embedding_dims:
-            raise ValueError(f"embedding_dim can only be one of these: {possible_embedding_dims}")
-
         # we go back to the parent which is the root. (This method is called from notebooks/<a notebook>.ipynb)
         notebooks_dir = '/notebooks'
-        files_dir = re.sub(notebooks_dir, "", os.getcwd()) + '/glove_embeddings/twitter'
-        file_name = f'glove.twitter.27B.{self.glove_embedding_dim}d.txt'
+        # set the file directories and file names by parsing the url
+        zip_file_name = self.glove_url.split('/')[-1]
+        glove_type = re.match(r'glove\.([A-Za-z0-9\.]+)\.zip', zip_file_name).group(1)
+        file_name = f'glove.{glove_type}.{self.glove_embedding_dim}d.txt'
+        files_dir = re.sub(notebooks_dir, "", os.getcwd()) + f'/glove_embeddings/{glove_type}'
 
         # download the zip file, then extract if file does not exist
         if not os.path.exists(os.path.join(files_dir, file_name)):
-            print("It seems like you do not have the required embeddings for this setting.\n"
-                  "The required step are being executed... \n")
-            url = 'https://nlp.stanford.edu/data/glove.twitter.27B.zip'
-            # first make the directory if it does not exist
-            if not os.path.exists(files_dir):
-                # mode = 0o666
-                os.makedirs(files_dir)
-                print(f"Directory created: {files_dir} \n")
-            # download the file
-            print("Download has started...\n")
-            # with a bit of help from https://pythonguides.com/download-zip-file-from-url-using-python/
-            # unfortunately, for some reason unzipping without writing the zip to the disk is a bit buggy.
-            # therefore, we write the zip to the disk, unzip it, then delete the zip file.
-            response = requests.get(url)
-            zip_file_name = url.split('/')[-1]
-            zip_files_dir = os.path.join(files_dir, zip_file_name)
+            self._download_and_load_glove_embedding_file(files_dir, zip_file_name)
 
-            with open(zip_files_dir, 'wb') as output_file:
-                output_file.write(response.content)
-            print("Download completed, now unzipping...\n")
-            zip_file = ZipFile(zip_files_dir)
-            zip_file.extractall(files_dir)
-            print(f"Unzipping completed, extracted all files to {files_dir}. \n")
-            # remove the zip file
-            os.remove(zip_files_dir)
-            print("Removed the zip file")
-            print(f"Loading the file: {file_name} \n")
+        # fetch possible embedding dimensions from the file directory and do a check
+        possible_embedding_dims = [int(re.match(r'glove\.([A-Za-z0-9]+[\.])*(\d+)d\.txt', d).group(2))
+                                   for d in os.listdir(files_dir)]
+        if self.glove_embedding_dim not in possible_embedding_dims:
+            raise ValueError(f"embedding_dim can only be one of these: {possible_embedding_dims}")
+
+        print(f"Loading the file: {file_name} \n")
 
         embeddings_index_map = {}
         with open(os.path.join(files_dir, file_name)) as file:
@@ -388,6 +378,38 @@ class DataPipeline:
                 embeddings_index_map[word] = coefs
         print(f"Found {len(embeddings_index_map)} word vectors \n")
         return embeddings_index_map
+
+    def _download_and_load_glove_embedding_file(self, files_dir: str, zip_file_name: str):
+        """
+        method downloads the file in the glove_url then extracts the components of the zip under files_dir
+        then deletes the zip file
+        :param files_dir: the file directory to save the files
+        :param zip_file_name: name of the zip file
+        """
+        print("It seems like you do not have the required embeddings for this setting.\n"
+              "The required step are being executed... \n")
+        # first make the directory if it does not exist
+        if not os.path.exists(files_dir):
+            os.makedirs(files_dir)
+            print(f"Directory created: {files_dir} \n")
+        # download the file
+        print("Download has started...\n")
+        # with a bit of help from https://pythonguides.com/download-zip-file-from-url-using-python/
+        # unfortunately, for some reason unzipping without writing the zip to the disk is a bit buggy.
+        # therefore, we write the zip to the disk, unzip it, then delete the zip file.
+        response = requests.get(self.glove_url)
+
+        zip_files_dir = os.path.join(files_dir, zip_file_name)
+
+        with open(zip_files_dir, 'wb') as output_file:
+            output_file.write(response.content)
+        print("Download completed, now unzipping...\n")
+        zip_file = ZipFile(zip_files_dir)
+        zip_file.extractall(files_dir)
+        print(f"Unzipping completed, extracted all files to {files_dir}. \n")
+        # remove the zip file
+        os.remove(zip_files_dir)
+        print("Removed the zip file")
 
     def _get_word_index_map(self):
         """
@@ -399,6 +421,7 @@ class DataPipeline:
 
     def build_embeddings_initializer(self):
         """
+        method builds the embedding matrix using pre-trained embeddings
         https://keras.io/examples/nlp/pretrained_word_embeddings/
         :return: tf.keras.initializers.Constant()
         """
