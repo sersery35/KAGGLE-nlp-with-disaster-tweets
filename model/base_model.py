@@ -11,6 +11,7 @@ class BaseModel:
     embedding_dim = None
     lstm_dim = None
     hidden_dim = None
+    embeddings_initializer = None
     optimizer = None
     class_weights = None
     epochs = None
@@ -27,11 +28,12 @@ class BaseModel:
 
     def __init__(self, vocabulary_size: int, embedding_dim: int, lstm_dim: int, hidden_dim: int, n_labels: int,
                  encoder: tf.keras.layers.TextVectorization, epochs: int, batch_pipeline, hparam_manager,
-                 class_weights: dict):
+                 class_weights: dict, embeddings_initializer=tf.keras.initializers.GlorotUniform()):
         self.vocabulary_size = vocabulary_size
         self.embedding_dim = embedding_dim
         self.lstm_dim = lstm_dim
         self.hidden_dim = hidden_dim
+        self.embeddings_initializer = embeddings_initializer
         self.n_labels = n_labels
         self.epochs = epochs
         self.hparam_manager = hparam_manager
@@ -68,7 +70,7 @@ class BaseModel:
 
         self._set_run_name()
         self.model = keras.Sequential([
-            keras.layers.Embedding(self.vocabulary_size, self.embedding_dim, mask_zero=True),
+            keras.layers.Embedding(self.vocabulary_size, self.embedding_dim, self.embeddings_initializer, mask_zero=True),
             keras.layers.Dropout(self.hparam_manager.dropout),
             keras.layers.Bidirectional(keras.layers.LSTM(self.lstm_dim, return_sequences=True)),
             keras.layers.Dense(self.hidden_dim, activation=nn.relu),  # could be leaky_relu
@@ -82,6 +84,11 @@ class BaseModel:
         print(self.model.summary())
 
     def fit_and_evaluate(self, log_directory):
+        """
+        wrapper method for model.fit() and model.evaluate()
+        :param log_directory:
+        :return:
+        """
         print(f"{self.run_name} starting...")
 
         res = self.model.fit(
@@ -102,7 +109,9 @@ class BaseModel:
         return test_accuracy, precision, recall, f1, predictions
 
     def test_model(self, dataset: tf.data.Dataset, epochs: int):
-        # try to overfit with a small dataset
+        """
+        method tries to overfit with a small dataset to make a sanity check
+        """
         self.model.fit(
             dataset,
             validation_data=dataset,
@@ -110,4 +119,9 @@ class BaseModel:
         )
 
     def predict_for_kaggle(self, kaggle_test_dataset: tf.data.Dataset):
+        """
+        makes a prediction for the kaggle test dataset with the current model
+        :param kaggle_test_dataset: a tensorflow dataset
+        :return: np.array() of predictions
+        """
         return self.model.predict(kaggle_test_dataset).argmax(axis=-1)

@@ -6,6 +6,7 @@ import tensorflow as tf
 import string
 import requests
 from zipfile import ZipFile
+# import tweepy -> can not use it for this case unless you are a thesis student or a phd student :(
 
 AUTOTUNE = tf.data.AUTOTUNE
 
@@ -45,18 +46,17 @@ class DataPipeline:
                  train_file_name: str,
                  test_file_name: str,
                  sample_submission_file_name: str,
-                 vocabulary_size: int,
+                 max_vocabulary_size: int,
                  output_sequence_length=30,
                  glove_embedding_dim=100):
         self.train_file_name = train_file_name
         self.test_file_name = test_file_name
         self.sample_submission_file_name = sample_submission_file_name
         self.glove_embedding_dim = glove_embedding_dim
-        self.vocabulary_size = vocabulary_size
         self.input_vectorizer = tf.keras.layers.TextVectorization(standardize="lower_and_strip_punctuation",
                                                                   split="whitespace",
                                                                   output_mode="int",
-                                                                  max_tokens=vocabulary_size,
+                                                                  max_tokens=max_vocabulary_size,
                                                                   output_sequence_length=output_sequence_length)
 
     @staticmethod
@@ -72,14 +72,16 @@ class DataPipeline:
         print(f"Getting the file: {file_dir}")
         return pd.read_csv(file_dir, sep=',')
 
-    def prepare_dataset(self, include_cols=["location", "keyword"], apply_preprocessing=True):
+    def prepare_dataset(self, include_cols=["location", "keyword"], apply_preprocessing=True,
+                        download_mentioned_tweets=True):
         """
         loads data from csv and creates a tf.data.Dataset instance containing all data
         :return: tf.data.Dataset
         """
         # get data and create dataset
         dataframe = self.get_dataframe_from_csv(self.train_file_name).fillna(' ')
-
+        if download_mentioned_tweets:
+            dataframe = self.extract_urls(dataframe)
         # clear the text with pre-determined patterns
         dataframe = self.clear_keywords(dataframe)
         # concatenate location keyword and text then pass to tokenization
@@ -109,6 +111,12 @@ class DataPipeline:
         return dataset
 
     def prepare_submission_dataset(self, include_cols=["location", "keyword"], apply_preprocessing=True):
+        """
+        prepares the dataset for submission to KAGGLE
+        :param include_cols: an array of column names to append to the text column
+        :param apply_preprocessing: whether to use tokenize method of this class
+        :return: a tensorflow dataset
+        """
         # KAGGLE related stuff
         submission_test_dataframe = self.get_dataframe_from_csv(self.test_file_name).fillna(" ")
         if len(include_cols) > 0:
@@ -132,10 +140,11 @@ class DataPipeline:
         """
         # "tensorize" and vectorize
         inputs = tf.data.Dataset.from_tensor_slices(inputs)
-        if self.input_vectorizer is not None:
-            self.input_vectorizer.adapt(inputs)
-            inputs = inputs.map(self.input_vectorizer)
-            print(f"Vocabulary size of the vectorizer: {self.input_vectorizer.vocabulary_size()}")
+        self.input_vectorizer.adapt(inputs)
+        inputs = inputs.map(self.input_vectorizer)
+        print(f"Vocabulary size of the vectorizer: {self.input_vectorizer.vocabulary_size()}")
+        self.vocabulary_size = self.input_vectorizer.vocabulary_size()
+
         # adapter to test.csv file which does not have target column
         if kwargs.get('targets', None) is not None:
             target_vectorizer = tf.keras.layers.CategoryEncoding(num_tokens=class_num, output_mode="one_hot")
@@ -175,6 +184,24 @@ class DataPipeline:
             dataframe[col_name] = clean_keywords
         return dataframe
 
+    @staticmethod
+    def extract_urls(dataframe, silent=True):
+        """
+           method extracts urls from a dataframe
+           :param dataframe: pd.DataFrame, dataframe to be processed
+           :return: pd.DataFrame with an extra url column with the corresponding urls
+           """
+        # capture url domain and dir, join them to create a downloadable link then remove quotation marks
+        urls = dataframe["text"].map(lambda text: ["".join([re.sub(r'[\"\']', "", element) for element in group])
+                                                   for group in re.findall(r'(https?:\/\/)(\S+?)(\/\S+)', text)])
+        # print out the extracted urls
+        if not silent:
+            for row in urls.values:
+                if len(row) > 0:
+                    print(f"{row}")
+        dataframe["url"] = urls
+        return dataframe
+
     def tokenize_dataframe(self, dataframe: pd.DataFrame):
         """
         wrapper function for tokenize
@@ -209,7 +236,7 @@ class DataPipeline:
         # replace mention username with <USER> tag
         text = re.sub(r'@\w+', f" {self.tokens['user']} ", text)
         # handle urls
-        text = re.sub(r'https?:\/\/(.+?)(\/.*)', f" {self.tokens['url']} ", text)
+        text = re.sub(r'(https?:\/\/)(\S+?)(\/\S+)', f" {self.tokens['url']} ", text)
         # force splitting words appended with slashes
         text = re.sub(r'/', " / ", text)
         # handle emoticons
@@ -419,6 +446,12 @@ class BatchPipeline:
         self.split_data(dataset, n_rows)
 
     def split_data(self, dataset: tf.data.Dataset, n_rows: int):
+        """
+        method sets the train_dataset, validation_dataset, and test_dataset of this class.
+        these datasets are used when the BatchPipeline is passed to the model.
+        :param dataset: a tensorflow dataset to be splitted into train, val and test
+        :param n_rows: precalculated number of rows, passed for convenience
+        """
         validation_size = round(((1 - self.train_validation_split) / 2) * n_rows)
         self.validation_dataset = dataset.take(validation_size).batch(batch_size=self.batch_size,
                                                                       drop_remainder=True)
@@ -431,3 +464,35 @@ class BatchPipeline:
         self.train_dataset = dataset.skip(2 * validation_size).batch(batch_size=self.batch_size,
                                                                      drop_remainder=True)
         self.train_dataset = self.train_dataset.cache().prefetch(buffer_size=AUTOTUNE)
+
+
+# followed the tutorial
+# https://towardsdatascience.com/an-extensive-guide-to-collecting-tweets-from-twitter-api-v2-for-academic-research-using-python-3-518fcb71df2a
+# class TweetParser:
+#     """
+#     class is a handler for parsing the tweets that are retrieved from the urls which were extracted from text column
+#     """
+#     def __init__(self):
+#         # read the bearer token from a local file
+#         with open(os.path.join(os.getcwd(), '../bearer_token.txt'), 'r') as file:
+#             bearer_token = file.read()
+#         if bearer_token is None:
+#             raise ValueError('Please provide a bearer token in a file named bearer_token.txt in the root folder in '
+#                              'this project. ')
+#         self.create_header(bearer_token)
+#
+#     @staticmethod
+#     def create_header(bearer_token: str):
+#         """
+#         method creates HTTP header for the request
+#         :param bearer_token: the auth token which can be retrieved with a Twitter dev account.
+#         :return: dict(), header
+#         """
+#         return {"Authorization": f"Bearer {bearer_token}"}
+#
+#     def get_tweet_by_id(id: str, bearer_token: str):
+#         auth = tweepy.OAuth2BearerHandler(bearer_token)
+#         api = tweepy.API(auth)
+#
+#         tweet = api.get_status(id)
+#         print(tweet.text)

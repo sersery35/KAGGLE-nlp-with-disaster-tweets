@@ -5,3 +5,4 @@ logs/*
 **/glove_embeddings
 glove_embeddings/*
 NameSurname.txt
+bearer_token.txt
