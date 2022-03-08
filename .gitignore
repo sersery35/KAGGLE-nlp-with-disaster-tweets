@@ -1,8 +1,8 @@
 **/__pycache__
-model.h5
 **/logs
 logs/*
 **/glove_embeddings
 glove_embeddings/*
+model/models/*
 NameSurname.txt
 bearer_token.txt

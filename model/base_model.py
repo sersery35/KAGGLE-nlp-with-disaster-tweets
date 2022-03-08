@@ -4,11 +4,14 @@ from official.nlp import optimization
 from sklearn.metrics import precision_recall_fscore_support
 import tensorflow as tf
 
+import os
+
 
 class BaseModel:
     """
     a wrapper class for handling model operations
     """
+    name = None
     hparam_manager = None
     batch_pipeline = None
     epochs = None
@@ -17,15 +20,17 @@ class BaseModel:
     run_name = None
     history = None
 
-    def __init__(self, vocabulary_size: int, embedding_dim: int, lstm_dim: int, hidden_dim: int, num_classes: int,
-                 epochs, batch_pipeline, hparam_manager, embeddings_initializer=tf.keras.initializers.GlorotUniform()):
-        train_dataset_len = tf.data.experimental.cardinality(batch_pipeline.train_dataset).numpy()
+    def __init__(self, vocabulary_size: int, embedding_dim: int, lstm_dims: list, hidden_dim: int, num_classes: int,
+                 epochs, batch_pipeline, hparam_manager, embeddings_initializer=tf.keras.initializers.GlorotUniform(),
+                 embeddings_regularizer=None):
+        self.name = 'basemodel'
         self.batch_pipeline = batch_pipeline
         self.epochs = epochs
         self.hparam_manager = hparam_manager
+        train_dataset_len = tf.data.experimental.cardinality(batch_pipeline.train_dataset).numpy()
         optimizer = self._get_optimizer(train_dataset_len)
-        self._set_model(vocabulary_size, embedding_dim, lstm_dim, hidden_dim, num_classes, optimizer,
-                        embeddings_initializer)
+        self._set_model(vocabulary_size, embedding_dim, lstm_dims, hidden_dim, num_classes, optimizer,
+                        embeddings_initializer, embeddings_regularizer)
 
     def _get_optimizer(self, train_dataset_len: int):
         """
@@ -55,32 +60,48 @@ class BaseModel:
                f"__class_weights={self.hparam_manager.class_weights or 'None'}" \
                f"__dropout={self.hparam_manager.dropout}"
 
-    def _set_model(self, vocabulary_size: int, embedding_dim: int, lstm_dim: int, hidden_dim: int, num_classes: int,
-                   optimizer: tf.keras.optimizers, embeddings_initializer: tf.keras.initializers):
+    def _set_model(self, vocabulary_size: int, embedding_dim: int, lstm_dims: int, hidden_dim: int, num_classes: int,
+                   optimizer: tf.keras.optimizers, embeddings_initializer: tf.keras.initializers,
+                   embeddings_regularizer: tf.keras.regularizers):
         """
         method sets the model
         :param vocabulary_size: the size of the vocabulary
         :param embedding_dim: embedding layer dim
-        :param lstm_dim: lstm layer dim
+        :param lstm_dims: list of dimensions of lstm layers; for each value an LSTM layer is created.
         :param hidden_dim: dense layer dim
         :param num_classes: number of classes
         :param optimizer: optimizer of the model
         :param embeddings_initializer: embeddings_initializer of the Embedding layer
+        :param embeddings_regularizer: embeddings_regularizer of the Embedding layer, initially None
         """
         is_trainable = mask_zero = not(isinstance(embeddings_initializer, tf.keras.initializers.Constant))
-        self.model = keras.Sequential([
-            keras.layers.Embedding(vocabulary_size, embedding_dim,
-                                   embeddings_initializer=embeddings_initializer,
-                                   trainable=is_trainable,
-                                   mask_zero=mask_zero),
-            # keras.layers.Dropout(self.hparam_manager.dropout),
-            keras.layers.Bidirectional(keras.layers.LSTM(lstm_dim, return_sequences=True)),
-            keras.layers.Bidirectional(keras.layers.LSTM(int(lstm_dim/2), return_sequences=True)),
-            keras.layers.Dense(hidden_dim, activation=nn.relu),  # could be leaky_relu
-            keras.layers.Dropout(self.hparam_manager.dropout),
-            keras.layers.GlobalAveragePooling1D(),
-            keras.layers.Dense(num_classes, activation=nn.softmax)  # could be sigmoid too.
-        ])
+        embedding_layer = keras.layers.Embedding(vocabulary_size, embedding_dim,
+                                                 embeddings_initializer=embeddings_initializer,
+                                                 embeddings_regularizer=embeddings_regularizer,
+                                                 trainable=is_trainable,
+                                                 mask_zero=mask_zero)
+        all_layers = [embedding_layer]
+        # dropout after embedding
+        dropout_layer = keras.layers.Dropout(self.hparam_manager.dropout)
+        all_layers.append(dropout_layer)
+        # bidirectional lstms
+        bidirectional_lstm_layers = [keras.layers.Bidirectional(keras.layers.LSTM(lstm_dim, return_sequences=True))
+                                     for lstm_dim in lstm_dims]
+        all_layers.extend(bidirectional_lstm_layers)
+        # first dense after lstms
+        dense_layer = keras.layers.Dense(hidden_dim, activation=nn.relu) # could be leaky_relu
+        all_layers.append(dense_layer)
+        # pooling
+        pooling_layer = keras.layers.GlobalAveragePooling1D()
+        all_layers.append(pooling_layer)
+        # dropout after pooling
+        dropout_layer = keras.layers.Dropout(self.hparam_manager.dropout)
+        all_layers.append(dropout_layer)
+        # classification
+        classification_layer = keras.layers.Dense(num_classes, activation=nn.sigmoid)  # could be sigmoid too.
+        all_layers.append(classification_layer)
+
+        self.model = keras.Sequential(all_layers)
 
         self.model.compile(optimizer=optimizer,
                            loss=keras.losses.BinaryCrossentropy(),
@@ -123,6 +144,16 @@ class BaseModel:
             validation_data=dataset,
             epochs=epochs
         )
+
+    def save_model(self, file_path='../model/models/'):
+        """
+        method saves the current model in file_path named as self.name
+        :param file_path: str, the path to store the model
+        """
+        if not os.path.exists(file_path):
+            os.makedirs(file_path)
+        file_path = os.path.join(file_path, self.name)
+        tf.keras.models.save_model(self.model, file_path)
 
     def predict_for_kaggle(self, kaggle_test_dataset: tf.data.Dataset):
         """

@@ -1,5 +1,6 @@
 import keras
 import tensorflow as tf
+import tensorflow_text
 import tensorflow_hub as tf_hub
 from .base_model import BaseModel
 
@@ -14,37 +15,32 @@ class SimpleBertModel(BaseModel):
     """
     bert_model_url = None
     bert_preprocessor_url = None
-    bert_layer = None
 
-    def __init__(self, batch_pipeline, parameters: dict, hyperparameters: dict, hparams: dict,
-                 class_weights: dict,
+    def __init__(self, batch_pipeline, hparam_manager, num_classes=2, epochs=10,
                  bert_model_url="https://tfhub.dev/tensorflow/small_bert/bert_en_uncased_L-2_H-128_A-2/1",
                  bert_preprocessor_url="https://tfhub.dev/tensorflow/bert_en_uncased_preprocess/3"):
-        self.bert_model_url = bert_model_url
-        self.bert_preprocessor_url = bert_preprocessor_url
-        self.parameters = parameters
-        self.hyperparameters = hyperparameters
-        self.hparams = hparams
-        self.class_weights \
-            = class_weights if self.hparams[self.hyperparameters["class_weights"]] == "balanced" else None
+        self.name = 'simplebertmodel'
+        self.hparam_manager = hparam_manager
         self.batch_pipeline = batch_pipeline
-        self._init_datasets()
-        self._set_optimizer()
-        self._set_model()
+        self.epochs = epochs
+        train_dataset_len = tf.data.experimental.cardinality(batch_pipeline.train_dataset).numpy()
+        optimizer = self._get_optimizer(train_dataset_len)
+        self._set_model(bert_preprocessor_url, bert_model_url, optimizer, num_classes)
 
-    def _set_model(self):
-        self._set_run_name()
+    def _set_model(self, bert_preprocessor_url: str, bert_model_url: str, optimizer: tf.keras.optimizers,
+                   num_classes: int):
         input_layer = tf.keras.layers.Input(shape=(), dtype=tf.string, name="text")
-        preprocess_layer = tf_hub.KerasLayer(self.bert_preprocessor_url, name="preprocess")
+        preprocess_layer = tf_hub.KerasLayer(bert_preprocessor_url, name="preprocess")
         preprocessed_inputs = preprocess_layer(input_layer)
-        encoder = tf_hub.KerasLayer(self.bert_model_url, trainable=True, name="BERT_encoder")
+        encoder = tf_hub.KerasLayer(bert_model_url, trainable=True, name="BERT_encoder")
         outputs = encoder(preprocessed_inputs)
-        net = outputs["pooled_output"]
-        net = tf.keras.layers.Dropout(self.hparams[self.hyperparameters["dropout"]])(net)
-        net = tf.keras.layers.Dense(2, activation=None, name="classifier")(net)
-        self.model = tf.keras.Model(input_layer, net)
+        pooled_outputs = outputs["pooled_output"]
+        dropout_outputs = tf.keras.layers.Dropout(self.hparam_manager.dropout)(pooled_outputs)
+        outputs = tf.keras.layers.Dense(num_classes, activation=tf.nn.sigmoid, name="classifier")(dropout_outputs)
 
-        self.model.compile(optimizer=self.optimizer,
+        self.model = tf.keras.Model(input_layer, outputs)
+
+        self.model.compile(optimizer=optimizer,
                            loss=tf.keras.losses.BinaryCrossentropy(),
                            metrics=["accuracy"])
         print(self.model.summary())

@@ -23,7 +23,6 @@ class DataPipeline:
     submission_test_dataset = None
     input_vectorizer = None
     vocabulary_size = 0
-    n_rows = 0
     embedding_dim = None
     glove_url = None
     # TODO: Decide whether to change these tokens
@@ -34,7 +33,7 @@ class DataPipeline:
         "smile": "<SMILE>",
         "sadface": "<SAD>",
         "neutralface": "<NEUTRAL>",
-        "lolface": "<LOL>",
+        "lolface": "<LAUGH>",
         "heart": "<LOVE>",
         "number": "<NUMBER>",
         "allcaps": "<ALLCAPS>",
@@ -45,7 +44,7 @@ class DataPipeline:
 
     def __init__(self,
                  train_file_name: str,
-                 test_file_name: str,
+                 kaggle_test_file_name: str,
                  sample_submission_file_name: str,
                  max_vocabulary_size: int,
                  output_sequence_length=30,
@@ -53,10 +52,9 @@ class DataPipeline:
                  glove_url='https://nlp.stanford.edu/data/glove.twitter.27B.zip'):
         # check if the glove_embedding_dim is a possible embedding dim
         assert glove_embedding_dim in [25, 50, 100, 200, 300]
-
         self.train_file_name = train_file_name
-        self.test_file_name = test_file_name
-        self.sample_submission_file_name = sample_submission_file_name
+        self.kaggle_test_file_name = kaggle_test_file_name
+        self.sample_submission_data = self._get_dataframe_from_csv(sample_submission_file_name)
         self.glove_embedding_dim = glove_embedding_dim
         self.glove_url = glove_url
         self.input_vectorizer = tf.keras.layers.TextVectorization(standardize="lower_and_strip_punctuation",
@@ -65,14 +63,69 @@ class DataPipeline:
                                                                   max_tokens=max_vocabulary_size,
                                                                   output_sequence_length=output_sequence_length)
 
-    def prepare_dataset(self, include_cols=["location", "keyword"], apply_preprocessing=True,
-                        download_mentioned_tweets=False):
+    def prepare_train_dataset(self, include_cols=["location", "keyword"], extract_extras=True,
+                              download_mentioned_tweets=False, class_num=2, vectorize=True):
         """
-        loads data from csv and creates a tf.data.Dataset instance containing all data
+        loads train data from csv and creates a tf.data.Dataset instance containing all training data
+        :param include_cols: which columns to include into the text (the data to be procesed)
+        :param extract_extras: whether to apply a custom method that extracts feelings and other valuable
+        attributes from the text
+        :param download_mentioned_tweets: whether to download mentioned tweets, currently not possible to use :(
+        :param class_num: number of classes
+        :param vectorize: whether to use TextVectorization layer to vectorize the data
+        :param drop_limit: the minimum numbers of tokens (words, elements) required to have in order to be included in
+        training process
         :return: tf.data.Dataset
         """
+        dataset, self.dataframe = self._prepare(self.train_file_name,
+                                                include_cols=include_cols,
+                                                extract_extras=extract_extras,
+                                                download_mentioned_tweets=download_mentioned_tweets,
+                                                class_num=class_num,
+                                                vectorize=vectorize)
+
+        return dataset
+
+    def prepare_submission_dataset(self, include_cols=["location", "keyword"], extract_extras=True,
+                                   download_mentioned_tweets=False, class_num=2, vectorize=True):
+        """
+        prepares the dataset for submission to KAGGLE
+        :param include_cols: which columns to include into the text (the data to be procesed)
+        :param extract_extras: whether to apply a custom method that extracts feelings and other valuable
+        attributes from the text
+        :param download_mentioned_tweets: whether to download mentioned tweets, currently not possible to use :(
+        :param class_num: number of classes
+        :param vectorize: whether to use TextVectorization layer to vectorize the data
+        :param drop_limit: the minimum numbers of tokens (words, elements) required to have in order to be included in
+        training process
+        :return: a tensorflow dataset
+        """
+        # KAGGLE related stuff
+        self.submission_test_dataset, _ = self._prepare(self.kaggle_test_file_name,
+                                                        include_cols=include_cols,
+                                                        extract_extras=extract_extras,
+                                                        download_mentioned_tweets=download_mentioned_tweets,
+                                                        class_num=class_num,
+                                                        vectorize=vectorize)
+
+    def _prepare(self, file_name: str, include_cols=["location", "keyword"], extract_extras=True,
+                 download_mentioned_tweets=False, class_num=2, vectorize=True, drop_limit=5):
+        """
+        method loads the data into a pd.DataFrame then applies several methods as preprocessing then finally returns a
+        tf.data.Dataset containing all inputs and targets
+        :param file_name: file to be loaded into a dataset
+        :param include_cols: which columns to include into the text (the data to be procesed)
+        :param extract_extras: whether to apply a custom method that extracts feelings and other valuable
+        attributes from the text
+        :param download_mentioned_tweets: whether to download mentioned tweets, currently not possible to use :(
+        :param class_num: number of classes
+        :param vectorize: whether to use TextVectorization layer to vectorize the data
+        :param drop_limit: the minimum numbers of tokens (words, elements) required to have in order to be included in
+        training process
+        :return: tf.data.Dataset, pd.DataFrame
+        """
         # get data and create dataset
-        dataframe = self._get_dataframe_from_csv(self.train_file_name).fillna(' ')
+        dataframe = self._get_dataframe_from_csv(file_name).fillna(' ')
         if download_mentioned_tweets:
             dataframe = self._extract_urls(dataframe)
         # clear the text with pre-determined patterns
@@ -81,14 +134,17 @@ class DataPipeline:
         if len(include_cols) > 0:
             for col in include_cols:
                 dataframe["text"] = dataframe[col] + " " + dataframe["text"]
-        self.dataframe = self._tokenize_dataframe(dataframe) if apply_preprocessing else dataframe
+        dataframe = self._tokenize_dataframe(dataframe) if extract_extras else dataframe
         # we need to remove some unnecessary entries
-        print(f"Dataframe size before eliminating too short texts: {len(self.dataframe)}")
-        self.dataframe.drop(self.dataframe[self.dataframe["text"].map(lambda entry: len(entry.split(" ")) < 5)].index,
-                            inplace=True)
-        print(f"Dataframe size after eliminating too short texts: {len(self.dataframe)}")
-        print(self.dataframe)
-        dataset = self._make_dataset(dataframe["text"], targets=dataframe["target"])
+        print(f"Dataframe size before eliminating too short texts: {len(dataframe)}")
+        dataframe.drop(dataframe[dataframe["text"].map(lambda entry: len(entry.split(" ")) < drop_limit)].index,
+                       inplace=True)
+        print(f"Dataframe size after eliminating too short texts: {len(dataframe)}")
+        print(dataframe)
+        dataset = self._make_dataset(dataframe["text"],
+                                     targets=dataframe["target"],
+                                     class_num=class_num,
+                                     vectorize=vectorize)
         # get row count
         n_rows = tf.data.experimental.cardinality(dataset).numpy()
 
@@ -101,49 +157,31 @@ class DataPipeline:
             print(f"Target: {target}")
         print("-----------------------------------------------------------------------------------------")
 
-        return dataset
+        return dataset, dataframe
 
-    def prepare_submission_dataset(self, include_cols=["location", "keyword"], apply_preprocessing=True):
+    def _make_dataset(self, inputs: pd.DataFrame, targets=None, class_num=2, vectorize=True):
         """
-        prepares the dataset for submission to KAGGLE
-        :param include_cols: an array of column names to append to the text column
-        :param apply_preprocessing: whether to use tokenize method of this class
-        :return: a tensorflow dataset
-        """
-        # KAGGLE related stuff
-        submission_test_dataframe = self._get_dataframe_from_csv(self.test_file_name).fillna(" ")
-        if len(include_cols) > 0:
-            for col in include_cols:
-                submission_test_dataframe["text"] = submission_test_dataframe[col] + " " + submission_test_dataframe[
-                    "text"]
-        submission_test_dataframe = self._tokenize_dataframe(
-            submission_test_dataframe) if apply_preprocessing else submission_test_dataframe
-
-        # self.vocabulary_size = self.input_vectorizer.vocabulary_size()
-        self.sample_submission_data = self._get_dataframe_from_csv(self.sample_submission_file_name)
-
-        return self._make_dataset(submission_test_dataframe["text"])
-
-    def _make_dataset(self, inputs: pd.DataFrame, class_num=2, **kwargs):
-        """
+        creates a tf.data.Dataset ready to be passed to the model as input.
         :param inputs: pd.DataFrame containing all data.
+        :param targets: pd.DataFrame containing all label data
         :param class_num: int, number of classes to be predicted
-        :param kwargs: dict(), used to pass targets: pd.DataFrame
+        :param vectorize: bool, indicates whether to use the TextVectorization layer. if this is set to false, then
+        a TextVectorizer should be provided to the model
         :return: zipped tf.data.Dataset
         """
         # "tensorize" and vectorize
-        inputs = tf.data.Dataset.from_tensor_slices(inputs)
-        self.input_vectorizer.adapt(inputs)
-        inputs = inputs.map(self.input_vectorizer)
-
-        print(f"Vocabulary size of the vectorizer: {self.input_vectorizer.vocabulary_size()}")
-        self.vocabulary_size = self.input_vectorizer.vocabulary_size()
+        inputs = tf.data.Dataset.from_tensor_slices(inputs.values)
+        if vectorize:
+            self.input_vectorizer.adapt(inputs)
+            inputs = inputs.map(self.input_vectorizer)
+            print(f"Vocabulary size of the vectorizer: {self.input_vectorizer.vocabulary_size()}")
+            self.vocabulary_size = self.input_vectorizer.vocabulary_size()
 
         # adapter to test.csv file which does not have target column
-        if kwargs.get('targets', None) is not None:
-            target_vectorizer = tf.keras.layers.CategoryEncoding(num_tokens=class_num, output_mode="one_hot")
-            targets = kwargs.get('targets', None).values
-            targets = tf.data.Dataset.from_tensor_slices(targets).map(target_vectorizer)
+        if targets is not None:
+            targets = tf.data.Dataset.from_tensor_slices(targets.values)
+            target_encoder = tf.keras.layers.CategoryEncoding(num_tokens=class_num, output_mode="one_hot")
+            targets = targets.map(target_encoder)
             return tf.data.Dataset.zip((inputs, targets))
         else:
             return tf.data.Dataset.zip((inputs,))
@@ -248,8 +286,8 @@ class DataPipeline:
         # force splitting words appended with slashes
         text = re.sub(r'/', " / ", text)
         # handle emoticons
-        eyes = r"[8:=;]"
-        nose = r"['`\-]?"
+        eyes = r'[8:=;]'
+        nose = r'[\'`\-]?'
         # smiley face
         text = re.sub(fr'{eyes}{nose}[)d]+|[)d]+{nose}{eyes}', f" {self.tokens['smile']} ", text)
         # lol face
@@ -446,6 +484,10 @@ class DataPipeline:
 
         return tf.keras.initializers.Constant(embedding_matrix)
 
+    @staticmethod
+    def build_embeddings_regularizer(strength=0.0001):
+        return tf.keras.regularizers.l1(strength)
+
 
 class BatchPipeline:
     """
@@ -462,7 +504,7 @@ class BatchPipeline:
         if train_validation_split <= 0 or train_validation_split >= 1:
             raise ValueError("The train_validation_split should be between 0 and 1: (0, 1)")
         # shuffle
-        n_rows = tf.data.experimental.cardinality(dataset).numpy()
+        n_rows = len(dataset)
         dataset = dataset.shuffle(n_rows, seed=42, reshuffle_each_iteration=False)
         self.batch_size = batch_size
         self.train_validation_split = train_validation_split
