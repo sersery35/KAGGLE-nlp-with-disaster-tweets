@@ -6,10 +6,10 @@ import tensorflow as tf
 import string
 import requests
 from zipfile import ZipFile
-# import tweepy -> can not use it for this case unless you are a thesis student or a phd student :(
 
 AUTOTUNE = tf.data.AUTOTUNE
 
+# https://nlp.stanford.edu/projects/glove/ for glove related
 
 class DataPipeline:
     """
@@ -25,9 +25,7 @@ class DataPipeline:
     vocabulary_size = 0
     embedding_dim = None
     glove_url = None
-    # TODO: Decide whether to change these tokens
     tokens = {
-        # TODO: Also can extract tweets from the url and append them to the existing one.
         "url": "<URL>",
         "user": "<USER>",
         "smile": "<SMILE>",
@@ -36,10 +34,7 @@ class DataPipeline:
         "lolface": "<LAUGH>",
         "heart": "<LOVE>",
         "number": "<NUMBER>",
-        "allcaps": "<ALLCAPS>",
         "hashtag": "<HASHTAG>",
-        "repeat": "<REPEAT>",
-        "elong": "<ELONG>"
     }
 
     def __init__(self,
@@ -63,14 +58,13 @@ class DataPipeline:
                                                                   max_tokens=max_vocabulary_size,
                                                                   output_sequence_length=output_sequence_length)
 
-    def prepare_train_dataset(self, include_cols=["location", "keyword"], extract_extras=True,
-                              download_mentioned_tweets=False, class_num=2, vectorize=True):
+    def prepare_train_dataset(self, include_cols=["location", "keyword"], extract_extras=True, class_num=2,
+                              vectorize=True, drop_limit=5):
         """
         loads train data from csv and creates a tf.data.Dataset instance containing all training data
         :param include_cols: which columns to include into the text (the data to be procesed)
         :param extract_extras: whether to apply a custom method that extracts feelings and other valuable
         attributes from the text
-        :param download_mentioned_tweets: whether to download mentioned tweets, currently not possible to use :(
         :param class_num: number of classes
         :param vectorize: whether to use TextVectorization layer to vectorize the data
         :param drop_limit: the minimum numbers of tokens (words, elements) required to have in order to be included in
@@ -80,20 +74,19 @@ class DataPipeline:
         dataset, self.dataframe = self._prepare(self.train_file_name,
                                                 include_cols=include_cols,
                                                 extract_extras=extract_extras,
-                                                download_mentioned_tweets=download_mentioned_tweets,
                                                 class_num=class_num,
-                                                vectorize=vectorize)
+                                                vectorize=vectorize,
+                                                drop_limit=drop_limit)
 
         return dataset
 
-    def prepare_submission_dataset(self, include_cols=["location", "keyword"], extract_extras=True,
-                                   download_mentioned_tweets=False, class_num=2, vectorize=True):
+    def prepare_submission_dataset(self, include_cols=["location", "keyword"], extract_extras=True, class_num=2,
+                                   vectorize=True, drop_limit=5):
         """
         prepares the dataset for submission to KAGGLE
         :param include_cols: which columns to include into the text (the data to be procesed)
         :param extract_extras: whether to apply a custom method that extracts feelings and other valuable
         attributes from the text
-        :param download_mentioned_tweets: whether to download mentioned tweets, currently not possible to use :(
         :param class_num: number of classes
         :param vectorize: whether to use TextVectorization layer to vectorize the data
         :param drop_limit: the minimum numbers of tokens (words, elements) required to have in order to be included in
@@ -104,12 +97,12 @@ class DataPipeline:
         self.submission_test_dataset, _ = self._prepare(self.kaggle_test_file_name,
                                                         include_cols=include_cols,
                                                         extract_extras=extract_extras,
-                                                        download_mentioned_tweets=download_mentioned_tweets,
                                                         class_num=class_num,
-                                                        vectorize=vectorize)
+                                                        vectorize=vectorize,
+                                                        drop_limit=drop_limit)
 
-    def _prepare(self, file_name: str, include_cols=["location", "keyword"], extract_extras=True,
-                 download_mentioned_tweets=False, class_num=2, vectorize=True, drop_limit=5):
+    def _prepare(self, file_name: str, include_cols=["location", "keyword"], extract_extras=True, class_num=2,
+                 vectorize=True, drop_limit=5):
         """
         method loads the data into a pd.DataFrame then applies several methods as preprocessing then finally returns a
         tf.data.Dataset containing all inputs and targets
@@ -117,7 +110,6 @@ class DataPipeline:
         :param include_cols: which columns to include into the text (the data to be procesed)
         :param extract_extras: whether to apply a custom method that extracts feelings and other valuable
         attributes from the text
-        :param download_mentioned_tweets: whether to download mentioned tweets, currently not possible to use :(
         :param class_num: number of classes
         :param vectorize: whether to use TextVectorization layer to vectorize the data
         :param drop_limit: the minimum numbers of tokens (words, elements) required to have in order to be included in
@@ -126,15 +118,13 @@ class DataPipeline:
         """
         # get data and create dataset
         dataframe = self._get_dataframe_from_csv(file_name).fillna(' ')
-        if download_mentioned_tweets:
-            dataframe = self._extract_urls(dataframe)
         # clear the text with pre-determined patterns
         dataframe = self._clear_keywords(dataframe)
         # concatenate location keyword and text then pass to tokenization
         if len(include_cols) > 0:
             for col in include_cols:
                 dataframe["text"] = dataframe[col] + " " + dataframe["text"]
-        dataframe = self._tokenize_dataframe(dataframe) if extract_extras else dataframe
+        dataframe = self._extract_extras_from_dataframe(dataframe) if extract_extras else dataframe
         # we need to remove some unnecessary entries
         print(f"Dataframe size before eliminating too short texts: {len(dataframe)}")
         dataframe.drop(dataframe[dataframe["text"].map(lambda entry: len(entry.split(" ")) < drop_limit)].index,
@@ -232,11 +222,12 @@ class DataPipeline:
     @staticmethod
     def _extract_urls(dataframe, silent=True):
         """
-           method extracts urls from a dataframe
-           :param dataframe: pd.DataFrame, dataframe to be processed
-           :param silent: bool, prints out the extracted urls if True
-           :return: pd.DataFrame with an extra url column with the corresponding urls
-           """
+        method extracts urls from a dataframe -> not needed for this project since we can not use tweepy API to its full
+        extent, i.e, get tweets by id
+        :param dataframe: pd.DataFrame, dataframe to be processed
+        :param silent: bool, prints out the extracted urls if True
+        :return: pd.DataFrame with an extra url column with the corresponding urls
+        """
         # capture url domain and dir, join them to create a downloadable link then remove quotation marks
         urls = dataframe["text"].map(lambda text: ["".join([re.sub(r'[\"\']', "", element) for element in group])
                                                    for group in re.findall(r'(https?:\/\/)(\S+?)(\/\S+)', text)])
@@ -248,29 +239,29 @@ class DataPipeline:
         dataframe["url"] = urls
         return dataframe
 
-    def _tokenize_dataframe(self, dataframe: pd.DataFrame):
+    def _extract_extras_from_dataframe(self, dataframe: pd.DataFrame, remove_numbers=False):
         """
-        wrapper function for tokenize
+        wrapper function for _extract_extras
         :param dataframe: a pd.DataFrame whose column `text_col_name` will be tokenized
+        :param remove_numbers: bool, removes numbers from the text if true
         :return: pd.DataFrame
         """
         clean_text_col = []
         for text in dataframe["text"].values:
-            text = self._tokenize(text)
+            text = self._extract_extras(text, remove_numbers=remove_numbers)
             clean_text_col.append(text)
         dataframe["text"] = clean_text_col
 
         return dataframe
 
-    def _tokenize(self, text: str, remove_numbers=True, handle_extras=False):
+    def _extract_extras(self, text: str, remove_numbers: bool):
         """
         adapted from https://nlp.stanford.edu/projects/glove/preprocess-twitter.rb
         in this method we collect what we can and then clean up before passing to the TextVectorization
         layer with standardization
         :param text: text to be tokenized
         :param remove_numbers: bool, removes numbers from the text if true
-        :param handle_extras: bool, handles extra stuff, not necessary for this dataset
-        :return: str, cleaned tokenized text
+        :return: str, cleaned more insightful text
         """
         # print(f"Text before tokenization: {text}")
 
@@ -278,7 +269,6 @@ class DataPipeline:
         text = re.sub(r'[^\x00-\x7F]', " ", text)
         # clear newline
         text = re.sub(r'\r', " ", re.sub("\n", "", text))
-
         # replace mention username with <USER> tag
         text = re.sub(r'@\w+', f" {self.tokens['user']} ", text)
         # handle urls
@@ -299,8 +289,6 @@ class DataPipeline:
         # heart
         text = re.sub(r'<3', f" {self.tokens['heart']} ", text)
         # numbers: put space before and after
-        # TODO: Maybe parse out time, date etc. and repurpose them?
-        # numbers = re.findall(r'[-+]?[.\d]*[\d]+[:,.\d]*', text) -> this regex finds all formats
         numbers = re.findall(r'\d+', text)
         for number in numbers:
             if remove_numbers:
@@ -312,24 +300,14 @@ class DataPipeline:
         hashtag_regex = r'#[A-Za-z0-9]+'
         # first locate the hashtag
         hashtags = re.findall(hashtag_regex, text)
-        # print(f"hashtags: {hashtags}")
+
         if hashtags is not None:
             # iterate for each match
             for hashtag in hashtags:
-                hashtag_replacement = None
                 # remove the hashtag char (#)
                 hashtag_body = hashtag[1:]
-                # skip this check : we do not want to use "hashtag" word unnecessarily
-                # first check if the body already contains any tokens
-                # for token in self.tokens:
-                #     if token in hashtag_body:
-                #         hashtag_replacement = token
-                #         break
-
-                # if hashtag_replacement is None:
                 # check if the hashtag is in all uppercase
                 if hashtag_body.isupper():
-                    # hashtag_replacement = f" {self.tokens['hashtag']} " + hashtag_body + f" {self.tokens['allcaps']} "
                     hashtag_replacement = hashtag_body
                 else:
                     # first split camelCase or PascalCase hashtags into words
@@ -337,48 +315,34 @@ class DataPipeline:
                     # here we remove '' element if existent
                     if '' in words:
                         words.remove('')
-                    # hashtag_replacement = f" {self.tokens['hashtag']} " + " ".join(words)
                     hashtag_replacement = " ".join(words)
-
                 text = re.sub(hashtag, hashtag_replacement, text)
 
-        # ############################################## NOT RELEVANT ############################################## #
-        # not necessary for this project.
-        if handle_extras:
-            # punctuation repetitions
-            punctuation_repetition_regex = r'([!?.,]){2,}'
-            repeated_punctuations = re.findall(punctuation_repetition_regex, text)
-            # print(f"Repeated punctuations : {repeated_punctuations}")
-            if repeated_punctuations is not None:
-                # iterate for each match
-                for repeated_punctuation in repeated_punctuations:
-                    # replace repeating punctuations with <REPEAT> token
-                    # repeated_punctuation_replacement = repeated_punctuation[0] + f" {self.tokens['repeat']} "
-                    repeated_punctuation_replacement = repeated_punctuation[0]
-                    text = re.sub(punctuation_repetition_regex, repeated_punctuation_replacement, text)
-            # elongated words (e.g. heyyyyyyy => hey <ELONG> )
-            elongated_words_regex = r'\b(\S*?)(.)\2{2,}\b'
-            elongated_words = re.findall(elongated_words_regex, text)
-            # print(f"Elongated words: {elongated_words}")
-            if elongated_words is not None:
-                # iterate for each match
-                for elongated_word in elongated_words:
-                    # replace elongated word with the <ELONG> token
-                    # elongated_word_replacement = elongated_word[0] + elongated_word[1] + f" {self.tokens['elong']} "
-                    elongated_word_replacement = elongated_word[0] + elongated_word[1]
-                    text = re.sub(elongated_words_regex, elongated_word_replacement, text)
-
-        # ############################################## NOT RELEVANT ############################################## #
-        # print(f"before case transform: {text}")
-
+        # punctuation repetitions
+        punctuation_repetition_regex = r'([!?.,]){2,}'
+        repeated_punctuations = re.findall(punctuation_repetition_regex, text)
+        # print(f"Repeated punctuations : {repeated_punctuations}")
+        if repeated_punctuations is not None:
+            # iterate for each match
+            for repeated_punctuation in repeated_punctuations:
+                # remove repeating punctuations
+                repeated_punctuation_replacement = repeated_punctuation[0]
+                text = re.sub(punctuation_repetition_regex, repeated_punctuation_replacement, text)
+        # elongated words (e.g. heyyyyyyy => hey)
+        elongated_words_regex = r'\b(\S*?)(.)\2{2,}\b'
+        elongated_words = re.findall(elongated_words_regex, text)
+        # print(f"Elongated words: {elongated_words}")
+        if elongated_words is not None:
+            # iterate for each match
+            for elongated_word in elongated_words:
+                # replace elongated word with the original form
+                elongated_word_replacement = elongated_word[0] + elongated_word[1]
+                text = re.sub(elongated_words_regex, elongated_word_replacement, text)
         # remove extra spaces
         text = re.sub(r'[ ]{2,}', ' ', text).strip()
-
         # remove punctuations, convert to lowercase
         translator = str.maketrans('', '', string.punctuation)
         text = text.lower().translate(translator)
-
-        # print(f"Text after tokenization: {text}")
 
         return text
 
@@ -457,7 +421,7 @@ class DataPipeline:
         vocabulary = self.input_vectorizer.get_vocabulary()
         return dict(zip(vocabulary, range(len(vocabulary))))
 
-    def build_embeddings_initializer(self):
+    def _build_embeddings_initializer_for_glove(self):
         """
         method builds the embedding matrix using pre-trained embeddings
         https://keras.io/examples/nlp/pretrained_word_embeddings/
@@ -483,6 +447,16 @@ class DataPipeline:
         print(f"Converted {hits} words, and missed {misses} words.")
 
         return tf.keras.initializers.Constant(embedding_matrix)
+
+    def build_embeddings_initializer(self):
+        """
+        return the required Embedding initializer
+        :return:tf.keras.initializers
+        """
+        if self.glove_embedding_dim is None:
+            return tf.keras.initializers.GlorotUniform()
+        else:
+            return self._build_embeddings_initializer_for_glove()
 
     @staticmethod
     def build_embeddings_regularizer(strength=0.0001):
@@ -514,7 +488,7 @@ class BatchPipeline:
         """
         method sets the train_dataset, validation_dataset, and test_dataset of this class.
         these datasets are used when the BatchPipeline is passed to the model.
-        :param dataset: a tensorflow dataset to be splitted into train, val and test
+        :param dataset: a tensorflow dataset to be split into train, val and test
         :param n_rows: precalculated number of rows, passed for convenience
         """
         validation_size = round(((1 - self.train_validation_split) / 2) * n_rows)
@@ -529,35 +503,3 @@ class BatchPipeline:
         self.train_dataset = dataset.skip(2 * validation_size).batch(batch_size=self.batch_size,
                                                                      drop_remainder=True)
         self.train_dataset = self.train_dataset.cache().prefetch(buffer_size=AUTOTUNE)
-
-
-# followed the tutorial
-# https://towardsdatascience.com/an-extensive-guide-to-collecting-tweets-from-twitter-api-v2-for-academic-research-using-python-3-518fcb71df2a
-# class TweetParser:
-#     """
-#     class is a handler for parsing the tweets that are retrieved from the urls which were extracted from text column
-#     """
-#     def __init__(self):
-#         # read the bearer token from a local file
-#         with open(os.path.join(os.getcwd(), '../bearer_token.txt'), 'r') as file:
-#             bearer_token = file.read()
-#         if bearer_token is None:
-#             raise ValueError('Please provide a bearer token in a file named bearer_token.txt in the root folder in '
-#                              'this project. ')
-#         self.create_header(bearer_token)
-#
-#     @staticmethod
-#     def create_header(bearer_token: str):
-#         """
-#         method creates HTTP header for the request
-#         :param bearer_token: the auth token which can be retrieved with a Twitter dev account.
-#         :return: dict(), header
-#         """
-#         return {"Authorization": f"Bearer {bearer_token}"}
-#
-#     def get_tweet_by_id(id: str, bearer_token: str):
-#         auth = tweepy.OAuth2BearerHandler(bearer_token)
-#         api = tweepy.API(auth)
-#
-#         tweet = api.get_status(id)
-#         print(tweet.text)

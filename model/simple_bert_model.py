@@ -1,6 +1,5 @@
-import keras
 import tensorflow as tf
-import tensorflow_text
+import tensorflow_text  # required for BERT
 import tensorflow_hub as tf_hub
 from .base_model import BaseModel
 

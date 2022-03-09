@@ -28,7 +28,6 @@ class AttentionModel(BaseModel):
             dropout_rate=self.hparam_manager.dropout
         )
         train_dataset_len = tf.data.experimental.cardinality(batch_pipeline.train_dataset).numpy()
-        print(f"Train dataset length: {train_dataset_len}")
         optimizer = self._get_optimizer(train_dataset_len)
         self.model.compile(
             optimizer=optimizer,
