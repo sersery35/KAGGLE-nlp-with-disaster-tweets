@@ -3,8 +3,8 @@ import tensorflow as tf
 from .base_model import BaseModel
 from .utils import positional_encoding
 
-# used the self-attention model in 14 Neural Networks Sanity Checks.ipynb
 
+# This model is an adaption from 14 Neural Networks Sanity Checks.ipynb
 class AttentionModel(BaseModel):
     num_heads = None
 
@@ -28,7 +28,6 @@ class AttentionModel(BaseModel):
             dropout_rate=self.hparam_manager.dropout
         )
         train_dataset_len = tf.data.experimental.cardinality(batch_pipeline.train_dataset).numpy()
-        print(f"Train dataset length: {train_dataset_len}")
         optimizer = self._get_optimizer(train_dataset_len)
         self.model.compile(
             optimizer=optimizer,

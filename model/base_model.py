@@ -3,6 +3,7 @@ from tensorflow import keras, nn
 from official.nlp import optimization
 from sklearn.metrics import precision_recall_fscore_support
 import tensorflow as tf
+from tensorboard.plugins.hparams import api as hp
 
 import os
 
@@ -15,6 +16,7 @@ class BaseModel:
     hparam_manager = None
     batch_pipeline = None
     epochs = None
+    run_name = None
     # outputs
     model = None
     run_name = None
@@ -53,12 +55,12 @@ class BaseModel:
                              f"{self.hparam_manager.optimizer}")
 
     def _set_run_name(self):
-        return f"run -> " \
-               f"__lr={self.hparam_manager.learning_rate}" \
-               f"__batch_size={self.batch_pipeline.batch_size}" \
-               f"__optimizer={self.hparam_manager.optimizer}" \
-               f"__class_weights={self.hparam_manager.class_weights or 'None'}" \
-               f"__dropout={self.hparam_manager.dropout}"
+        self.run_name = f"basemodel" \
+                        f"__lr={self.hparam_manager.learning_rate}" \
+                        f"__batch_size={self.batch_pipeline.batch_size}" \
+                        f"__optimizer={self.hparam_manager.optimizer}" \
+                        f"__class_weights={self.hparam_manager.class_weights or 'None'}" \
+                        f"__dropout={self.hparam_manager.dropout}"
 
     def _set_model(self, vocabulary_size: int, embedding_dim: int, lstm_dims: int, hidden_dim: int, num_classes: int,
                    optimizer: tf.keras.optimizers, embeddings_initializer: tf.keras.initializers,
@@ -106,6 +108,7 @@ class BaseModel:
         self.model.compile(optimizer=optimizer,
                            loss=keras.losses.BinaryCrossentropy(),
                            metrics=['accuracy'])
+        self._set_run_name()
         print(self.model.summary())
 
     def fit_and_evaluate(self, class_weights: dict(), log_directory: str):
@@ -115,22 +118,22 @@ class BaseModel:
         :param log_directory: the directory to create the logs for this model
         :return: test_accuracy, precision, recall, f1, predictions
         """
-        run_name = self._set_run_name()
-        print(f"{run_name} starting...")
 
+        print(f"{self.run_name} starting...")
         res = self.model.fit(
             self.batch_pipeline.train_dataset,
             validation_data=self.batch_pipeline.validation_dataset,
             epochs=self.epochs,
-            callbacks=[keras.callbacks.TensorBoard(log_dir=f"{log_directory}{run_name}",
+            callbacks=[keras.callbacks.TensorBoard(log_dir=f"{log_directory}{self.run_name}",
                                                    histogram_freq=1,
-                                                   update_freq="batch")],
+                                                   update_freq="batch"),
+                       keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)],
             class_weight=class_weights if self.hparam_manager.class_weights == "balanced" else None)
         self.history = res.history
         test_loss, test_accuracy = self.model.evaluate(self.batch_pipeline.test_dataset)
         true_labels = np.concatenate([y for x, y in self.batch_pipeline.test_dataset], axis=0).argmax(axis=-1)
         predictions = self.model.predict(self.batch_pipeline.test_dataset).argmax(axis=-1)
-        print(f"{run_name} completed.")
+        print(f"{self.run_name} completed.")
         precision, recall, f1, support = precision_recall_fscore_support(true_labels, predictions, average="macro")
 
         return test_accuracy, precision, recall, f1, predictions

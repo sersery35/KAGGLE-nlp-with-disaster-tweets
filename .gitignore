@@ -6,3 +6,4 @@ glove_embeddings/*
 model/models/*
 NameSurname.txt
 bearer_token.txt
+kaggle_predictions.csv
