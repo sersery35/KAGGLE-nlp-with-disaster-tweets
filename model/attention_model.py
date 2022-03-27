@@ -3,8 +3,8 @@ import tensorflow as tf
 from .base_model import BaseModel
 from .utils import positional_encoding
 
-# used the self-attention model in 14 Neural Networks Sanity Checks.ipynb
 
+# This model is an adaption from 14 Neural Networks Sanity Checks.ipynb
 class AttentionModel(BaseModel):
     num_heads = None
 

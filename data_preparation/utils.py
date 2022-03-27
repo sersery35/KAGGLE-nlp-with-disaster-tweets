@@ -9,6 +9,7 @@ from zipfile import ZipFile
 
 AUTOTUNE = tf.data.AUTOTUNE
 
+
 # https://nlp.stanford.edu/projects/glove/ for glove related
 
 class DataPipeline:
@@ -94,15 +95,16 @@ class DataPipeline:
         :return: a tensorflow dataset
         """
         # KAGGLE related stuff
-        self.submission_test_dataset, _ = self._prepare(self.kaggle_test_file_name,
-                                                        include_cols=include_cols,
-                                                        extract_extras=extract_extras,
-                                                        class_num=class_num,
-                                                        vectorize=vectorize,
-                                                        drop_limit=drop_limit)
+        return self._prepare(self.kaggle_test_file_name,
+                             include_cols=include_cols,
+                             extract_extras=extract_extras,
+                             class_num=class_num,
+                             vectorize=vectorize,
+                             drop_limit=drop_limit,
+                             include_targets=False)
 
     def _prepare(self, file_name: str, include_cols=["location", "keyword"], extract_extras=True, class_num=2,
-                 vectorize=True, drop_limit=5):
+                 vectorize=True, drop_limit=5, include_targets=True):
         """
         method loads the data into a pd.DataFrame then applies several methods as preprocessing then finally returns a
         tf.data.Dataset containing all inputs and targets
@@ -132,24 +134,26 @@ class DataPipeline:
         print(f"Dataframe size after eliminating too short texts: {len(dataframe)}")
         print(dataframe)
         dataset = self._make_dataset(dataframe["text"],
-                                     targets=dataframe["target"],
+                                     targets=dataframe["target"] if include_targets else None,
                                      class_num=class_num,
-                                     vectorize=vectorize)
+                                     vectorize=vectorize,
+                                     predict=not include_targets)
         # get row count
         n_rows = tf.data.experimental.cardinality(dataset).numpy()
 
         # print some examples of the dataset
-        print("-----------------------------------------------------------------------------------------")
-        print(f"Dataset \nSize: {n_rows} data points")
-        print("Dataset examples:")
-        for input_, target in dataset.take(3):
-            print(f"Input: {input_}")
-            print(f"Target: {target}")
-        print("-----------------------------------------------------------------------------------------")
+        if include_targets:
+            print("-----------------------------------------------------------------------------------------")
+            print(f"Dataset \nSize: {n_rows} data points")
+            print("Dataset examples:")
+            for input_, target in dataset.take(3):
+                print(f"Input: {input_}")
+                print(f"Target: {target}")
+            print("-----------------------------------------------------------------------------------------")
 
         return dataset, dataframe
 
-    def _make_dataset(self, inputs: pd.DataFrame, targets=None, class_num=2, vectorize=True):
+    def _make_dataset(self, inputs: pd.DataFrame, targets=None, class_num=2, vectorize=True, predict=False):
         """
         creates a tf.data.Dataset ready to be passed to the model as input.
         :param inputs: pd.DataFrame containing all data.
@@ -162,7 +166,8 @@ class DataPipeline:
         # "tensorize" and vectorize
         inputs = tf.data.Dataset.from_tensor_slices(inputs.values)
         if vectorize:
-            self.input_vectorizer.adapt(inputs)
+            if not predict:
+                self.input_vectorizer.adapt(inputs)
             inputs = inputs.map(self.input_vectorizer)
             print(f"Vocabulary size of the vectorizer: {self.input_vectorizer.vocabulary_size()}")
             self.vocabulary_size = self.input_vectorizer.vocabulary_size()
@@ -475,7 +480,7 @@ class BatchPipeline:
     batch_size = 0
 
     def __init__(self, dataset: tf.data.Dataset, batch_size: int, train_validation_split=0.6):
-        if train_validation_split <= 0 or train_validation_split >= 1:
+        if train_validation_split <= 0 or train_validation_split > 1:
             raise ValueError("The train_validation_split should be between 0 and 1: (0, 1)")
         # shuffle
         n_rows = len(dataset)

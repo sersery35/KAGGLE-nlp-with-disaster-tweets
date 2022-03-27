@@ -4,9 +4,7 @@ import tensorflow_hub as tf_hub
 from .base_model import BaseModel
 
 
-# TODO: THIS MODEL IS NOT FINE-TUNED YET
-
-
+# this model is an adaption from  9 Finetuning BERT for text classification.ipynb
 class SimpleBertModel(BaseModel):
     """
     this class expects non-vectorized inputs, i.e, set vectorize=False for the DataPipeline instance which is then
